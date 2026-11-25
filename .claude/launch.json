@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "camera-console",
+      "runtimeExecutable": "C:\\dev\\GlassInspectionStudio\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "gistudio.cli", "console", "C:\\dev\\gis_pilot", "--port", "8765"],
+      "port": 8765
+    },
+    {
+      "name": "camera-console-mock",
+      "runtimeExecutable": "C:\\dev\\GlassInspectionStudio\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "gistudio.cli", "console", "C:\\dev\\gis_mock_console", "--port", "8766", "--mock"],
+      "port": 8766
+    }
+  ]
+}

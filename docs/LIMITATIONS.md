@@ -1,0 +1,47 @@
+# 알려진 한계 및 미구현 기능
+
+## 데이터 / 성능 관련 (중요)
+
+* 실제 검사 데이터로는 아무것도 검증하지 않았습니다. 이 문서의 모든 수치는 **합성 데이터의 기능 검증 결과**이며, 광학 성능이나 NG 검출률을 나타내지 않습니다.
+* 정상병이 없으므로 실제 오배출률(false reject)은 측정할 수 없습니다. GUI와 리포트에 그렇게 표시합니다.
+* 검증 세트에서 임계값을 확정하는 기능은 일부러 넣지 않았습니다. Operating threshold는 사용자가 지정합니다.
+* 이 PC에는 NVIDIA GPU가 없습니다(Intel Arc 130V). 그래서 **CUDA 경로(설치, AMP, GPU 메모리 측정)는 실행해 보지 못했습니다.**
+  * 코드 경로는 있습니다: `setup.ps1`의 CUDA 감지, `torch.autocast`, `memory_report`.
+  * Intel XPU는 감지만 하고 기본 장치로 쓰지 않습니다.
+* CPU에서 WinCLIP은 640×512 프레임당 약 47초가 걸렸습니다(학습과 동시 실행). 대량 처리에는 GPU가 필요합니다.
+
+## 카메라 연동 (2026-11-25 기준)
+
+* 카메라: JAI GOX-12405M-5GE (S/N 000360, GigE, 169.254.123.154)
+  * Spinnaker 4.4 GenTL과 Harvesters로 **장치 탐색까지 확인했습니다.**
+  * 장치 열기(open)는 SpinView가 카메라를 점유하고 있어 AccessDenied로 실패했습니다.
+  * 그래서 실제 영상 취득은 아직 검증하지 못했습니다.
+* Spinnaker는 FLIR/Teledyne 카메라용 SDK입니다. SpinView를 닫은 뒤에도 JAI 카메라 열기가 거부될 수 있습니다.
+  * 그 경우 JAI 공식 eBUS SDK의 GenTL producer(.cti)를 설치하고 경로만 바꾸면 됩니다. 코드는 바꿀 필요가 없습니다.
+* 5GigE 카메라를 1 GbE USB 어댑터에 연결했기 때문에 프레임률이 제한됩니다. 정지 촬영에는 문제없습니다.
+* 회전 각도는 아직 작업자가 입력한 값입니다(수동 회전). 엔코더와 스테이지 핸드셰이크는 미구현입니다.
+
+## 미구현 / 부분 구현
+
+| 항목 | 상태 |
+|---|---|
+| AnomalyCLIP | 미통합 (MODELS.md 참조) |
+| DINO, SAM 플러그인 | 미구현 (플러그인 구조만 있음) |
+| PatchCore / EfficientAD | 미구현 (연동 지침만 있음) |
+| Multi-frame (5채널) CNN | 미구현. HRUNet의 `in_ch`로 확장할 수 있는 구조 |
+| CVAT Import/Export | 미구현. 내부 JSON export만 있음 |
+| Optical Flow 추적 | 미구현. 템플릿 매칭(NCC)만 있음 |
+| ONNX / TensorRT export | 미구현 (Phase 7) |
+| GPU batch inference 최적화 | 타일 배치만 있음. 프레임 간 배치는 미구현 |
+| Polygon/Mask 편집 (꼭짓점 이동) | 미구현. 삭제 후 다시 그려야 함 |
+| 라벨 검색 | 클래스 필터만 있음 |
+| 반복 촬영 재현성 | `evaluation.angular.repeatability` 함수는 있으나 GUI 버튼은 없음 (CLI/Python으로 사용) |
+| 실제 하드웨어 SDK 어댑터 | 미구현 (추상 인터페이스와 Mock/File provider만 있음) |
+
+## 알고리즘 관련
+
+* Multi-view 그룹화는 휴리스틱입니다: 인접 프레임, y 허용오차, 프레임 간격에 비례하는 x 허용오차. 애매하게 매칭되면 합치지 않고 프레임별 결과를 그대로 둡니다.
+* Angular sampling 실험에서는 라벨이 없는 프레임의 결함 위치를 알 수 없으므로 "미검출"로 보수적으로 처리합니다.
+* Bubble 검출기의 circularity, ring 점수는 경험적 휴리스틱입니다.
+* 합성 데이터 생성기는 굴절, 앞뒤면 중첩, 가시성 변화를 단순화한 모델이며 실제 광학을 대표하지 않습니다.
+* 흑백 카메라에서 사라지는 색 정보는 복원하지 않습니다. 컬러 영상은 luma로 변환되며 `is_true_color` 플래그로 구분할 수 있습니다.

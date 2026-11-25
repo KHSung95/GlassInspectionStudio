@@ -1,0 +1,18 @@
+{
+  "epochs": 30,
+  "batch_size": 8,
+  "lr": 0.001,
+  "tile": 256,
+  "samples_per_epoch": 512,
+  "val_samples": 128,
+  "pos_fraction": 0.5,
+  "base_channels": 16,
+  "depth": 4,
+  "context_module": true,
+  "loss": {"black_spot": "heatmap_focal", "bubble": "bce+dice", "intensity": "bce+dice"},
+  "policy": {"channels": ["black_spot", "bubble", "intensity"], "point_sigma": 1.5, "point_valid_radius": 6.0,
+             "point_channels": ["black_spot"], "point_as_disc_radius": 2.0},
+  "device": "auto",
+  "amp": false,
+  "seed": 0
+}

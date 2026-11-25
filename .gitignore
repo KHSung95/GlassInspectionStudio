@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+models/clip_cache/
+models/hf_cache/
+models/torch_cache/
+*.egg-info/
+plugins/__pycache__/
+.claude/settings.local.json
+artifacts/

@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glass-inspection-studio"
+version = "0.1.0"
+description = "Local machine-vision R&D platform for transparent glass bottle defect inspection"
+requires-python = ">=3.10,<3.13"
+readme = "README.md"
+# Exact pins live in requirements.lock.txt (generated from the verified environment).
+dependencies = [
+    "numpy>=2.0",
+    "opencv-python-headless>=4.10",
+    "tifffile>=2024.1",
+    "PySide6>=6.7",
+    "pyqtgraph>=0.13",
+    "scipy>=1.11",
+    "torch>=2.3",
+    "torchvision>=0.18",
+    "open_clip_torch>=2.24",
+    "anomalib>=2.0",
+    "tensorboard>=2.15",
+    "harvesters>=1.4",   # GenICam/GenTL camera consumer (vendor .cti producer required)
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+gistudio = "gistudio.cli:main"
+
+[project.gui-scripts]
+gistudio-gui = "gistudio.app.main_window:main"
+
+[tool.setuptools.packages.find]
+include = ["gistudio*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: needs downloaded pretrained weights / longer runtime"]
+filterwarnings = ["ignore::FutureWarning", "ignore::DeprecationWarning"]

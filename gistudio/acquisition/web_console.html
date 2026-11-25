@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera Console</title>
+<style>
+:root{--bg:#16181c;--panel:#1f2228;--line:#2e323a;--text:#e3e6ea;--muted:#9aa1ab;--accent:#4da3ff;--ok:#3ecf8e;--warn:#ffb454;--bad:#ff6b6b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:13px/1.4 system-ui,"Segoe UI","Malgun Gothic",sans-serif}
+header{display:flex;gap:16px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+header b{font-size:14px}
+.pill{padding:2px 8px;border-radius:10px;background:var(--panel);border:1px solid var(--line);color:var(--muted)}
+.pill.ok{color:var(--ok)}.pill.bad{color:var(--bad)}
+main{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px;padding:12px}
+@media (max-width:900px){main{grid-template-columns:1fr}}
+.live{position:relative;background:#000;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.live img{width:100%;display:block;cursor:crosshair}
+.marker{position:absolute;border:1px solid var(--warn);pointer-events:none}
+.side{display:flex;flex-direction:column;gap:10px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px}
+section h3{margin:0 0 8px;font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.grid{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;align-items:center}
+.kv span:nth-child(odd){color:var(--muted)}
+input,select{background:#12141a;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;width:100%;font:inherit}
+button{background:#2a2f38;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:6px 10px;font:inherit;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#0b1220;font-weight:600}
+button:disabled{opacity:.5;cursor:default}
+.row{display:flex;gap:6px;margin-top:8px}
+.row>*{flex:1}
+#crop{width:100%;image-rendering:pixelated;background:#000;border-radius:4px;display:block}
+.caps{display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:6px;max-height:300px;overflow:auto}
+.caps figure{margin:0;font-size:11px;color:var(--muted)}
+.caps img{width:100%;border-radius:3px;display:block}
+.warn{color:var(--warn)}.bad{color:var(--bad)}.ok{color:var(--ok)}
+.msg{min-height:18px;margin-top:6px;font-size:12px}
+.bar{height:6px;background:#12141a;border-radius:3px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent)}
+small{color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <b>Camera Console</b>
+  <span class="pill" id="cam">camera…</span>
+  <span class="pill" id="fps">– fps</span>
+  <span class="pill" id="lat">지연 –</span>
+  <span class="pill" id="proj">project</span>
+  <label style="display:flex;gap:6px;align-items:center;color:var(--muted)"><input type="checkbox" id="stretch" style="width:auto" checked> 표시 자동 대비 (화면만, 저장 영상 무관)</label>
+</header>
+<main>
+  <div>
+    <div class="live" id="livebox">
+      <img id="live" alt="live feed">
+      <div class="marker" id="marker" style="display:none"></div>
+    </div>
+    <small>실시간 영상은 축소·대비 보정된 미리보기입니다. 클릭하면 그 위치를 원본 해상도로 오른쪽에 확대합니다. 촬영은 원본 RAW(무손실 TIFF)로 저장됩니다.</small>
+  </div>
+  <div class="side">
+    <section>
+      <h3>영상 품질 (전체 프레임)</h3>
+      <div class="grid kv" id="qa"></div>
+      <div style="margin-top:6px"><small>밝기 (평균 / 최대 대비)</small><div class="bar"><i id="lvl" style="width:0"></i></div></div>
+    </section>
+    <section>
+      <h3>원본 확대 (1:1 픽셀)</h3>
+      <img id="crop" alt="zoom">
+      <div class="row">
+        <select id="csize"><option value="128">128 px</option><option value="256" selected>256 px</option><option value="512">512 px</option></select>
+        <select id="cscale"><option value="1">×1</option><option value="2" selected>×2</option><option value="4">×4</option></select>
+      </div>
+      <div class="msg" id="cropinfo"></div>
+    </section>
+    <section>
+      <h3>촬영 세션</h3>
+      <div class="grid">
+        <span>병 코드 *</span><input id="bottle" placeholder="예: NG-001">
+        <span>품종</span><input id="ptype">
+        <span>로트</span><input id="lot">
+        <span>세션 코드</span><input id="scode" placeholder="자동">
+        <span>메모</span><input id="memo">
+        <span>시작 각도</span><input id="start" type="number" value="0">
+        <span>각도 간격</span><input id="step" type="number" value="0" title="0 = 각도 없음">
+        <span>평균 장수</span><input id="avg" type="number" value="1" min="1" max="32">
+        <span>클릭당 촬영</span><input id="shots" type="number" value="1" min="1" max="100">
+      </div>
+      <div class="row">
+        <button id="bnew">새 세션</button>
+        <button id="bcap" class="primary" disabled>촬영 (Space)</button>
+        <button id="bend">종료</button>
+      </div>
+      <div class="msg" id="sessmsg"></div>
+    </section>
+    <section>
+      <h3>카메라 설정 <small class="warn">Apply를 누를 때만 카메라에 기록</small></h3>
+      <div class="grid">
+        <span>노출 (µs)</span><div class="row" style="margin:0"><input id="exp" type="number"><button data-apply="exposure" data-src="exp">Apply</button></div>
+        <span>Gain</span><div class="row" style="margin:0"><input id="gain" type="number" step="0.1"><button data-apply="gain" data-src="gain">Apply</button></div>
+        <span>Gamma</span><div class="row" style="margin:0"><input id="gamma" type="number" step="0.05" min="0.45" max="1"><button data-apply="gamma" data-src="gamma">Apply</button></div>
+        <span>Pixel format</span><div class="row" style="margin:0"><select id="pf"></select><button data-apply="pixel_format" data-src="pf">Apply</button></div>
+      </div>
+      <div class="msg" id="setmsg"></div>
+    </section>
+    <section>
+      <h3>촬영된 프레임</h3>
+      <div class="caps" id="caps"></div>
+    </section>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let cx = .5, cy = .5, sessionOn = false, filled = false, busy = false;
+
+async function api(path, body) {
+  const r = await fetch(path, body ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)} : {});
+  return r.json();
+}
+function setMsg(el, text, cls) { el.textContent = text; el.className = 'msg ' + (cls || ''); }
+
+$('live').addEventListener('click', e => {
+  const r = e.target.getBoundingClientRect();
+  cx = (e.clientX - r.left) / r.width; cy = (e.clientY - r.top) / r.height;
+  refreshCrop();
+});
+$('csize').onchange = refreshCrop; $('cscale').onchange = refreshCrop;
+$('stretch').onchange = () => api('/api/view', {stretch: $('stretch').checked});
+
+async function refreshCrop() {
+  const size = +$('csize').value, scale = +$('cscale').value;
+  const r = await fetch(`/crop.png?x=${cx}&y=${cy}&size=${size}&scale=${scale}&t=${Date.now()}`);
+  if (!r.ok) return;
+  const meta = JSON.parse(r.headers.get('X-Crop') || '{}');
+  $('crop').src = URL.createObjectURL(await r.blob());
+  if (meta.size) {
+    $('cropinfo').textContent = `x ${meta.x0}–${meta.x0 + meta.size}, y ${meta.y0}–${meta.y0 + meta.size} · min ${meta.min} · mean ${meta.mean.toFixed(1)} · max ${meta.max} · focus ${meta.focus}`;
+    const img = $('live'), box = $('marker'), w = img.clientWidth, st = window.lastStatus;
+    if (st && st.features.Width) {
+      const s = w / st.features.Width;
+      Object.assign(box.style, {display: 'block', left: meta.x0 * s + 'px', top: meta.y0 * s + 'px', width: meta.size * s + 'px', height: meta.size * s + 'px'});
+    }
+  }
+}
+
+async function poll() {
+  try {
+    const s = await api('/api/status');
+    window.lastStatus = s;
+    const c = s.camera;
+    $('cam').textContent = `${c.camera_model || '?'} · S/N ${c.camera_serial || '-'} · ${s.features.Width}×${s.features.Height} ${c.pixel_format || ''}`;
+    $('cam').className = 'pill ' + (s.error ? 'bad' : 'ok');
+    $('fps').textContent = `${s.fps} fps · ${s.frames} frames`;
+    $('proj').textContent = s.project;
+    const q = s.quality || {};
+    const rows = [['초점 지표', q.focus], ['평균', q.mean], ['중앙값 / p99', `${q.p50} / ${q.p99}`], ['최대', `${q.max} / ${q.full_scale}`],
+                  ['포화 %', q.saturated_pct], ['암부 %', q.dark_pct], ['노출 µs', s.features.ExposureTime], ['Gain / Gamma', `${s.features.Gain} / ${s.features.Gamma}`],
+                  ['온도 °C', s.features.DeviceTemperature]];
+    $('qa').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v ?? '-'}</span>`).join('') + (s.error ? `<span class="bad">오류</span><span class="bad">${s.error}</span>` : '');
+    if (q.full_scale) $('lvl').style.width = Math.min(100, 100 * q.mean / q.full_scale) + '%';
+    if (!filled) {
+      $('exp').value = s.features.ExposureTime ?? ''; $('gain').value = s.features.Gain ?? ''; $('gamma').value = s.features.Gamma ?? '';
+      $('pf').innerHTML = s.pixel_formats.map(p => `<option ${p === s.features.PixelFormat ? 'selected' : ''}>${p}</option>`).join('');
+      filled = true;
+    }
+    sessionOn = !!s.session;
+    $('bcap').disabled = !sessionOn || busy;
+    if (s.session) setMsg($('sessmsg'), `세션 ${s.session.code} · ${s.session.count}장 · 다음 각도 ${s.session.next_angle} → ${s.session.dir}`, 'ok');
+    renderCaps(s.captures || []);
+  } catch (e) { $('cam').textContent = '서버 연결 끊김'; $('cam').className = 'pill bad'; }
+}
+let shown = -1;
+function renderCaps(caps) {
+  if (!caps.length) { $('caps').innerHTML = ''; shown = -1; return; }
+  const last = caps[caps.length - 1].index;
+  if (last === shown) return; shown = last;
+  $('caps').innerHTML = caps.slice().reverse().map(c => {
+    const q = c.quality, warn = q.saturated_pct > 1 ? 'warn' : '';
+    return `<figure><img src="/thumb.jpg?i=${c.index}&t=${c.frame_id}" loading="lazy"><figcaption class="${warn}">#${c.index} ${c.angle ?? ''}${c.angle != null ? '°' : ''} · focus ${q.focus} · sat ${q.saturated_pct}%</figcaption></figure>`;
+  }).join('');
+}
+
+$('bnew').onclick = async () => {
+  const r = await api('/api/session', {bottle: $('bottle').value, product_type: $('ptype').value, lot: $('lot').value,
+                                       session: $('scode').value, memo: $('memo').value, start: +$('start').value});
+  r.ok ? setMsg($('sessmsg'), `세션 ${r.session} 시작 → ${r.dir}`, 'ok') : setMsg($('sessmsg'), r.error, 'bad');
+  poll();
+};
+$('bend').onclick = async () => { await api('/api/end', {}); setMsg($('sessmsg'), '세션 종료', ''); poll(); };
+async function capture() {
+  if (!sessionOn || busy) return;
+  busy = true; $('bcap').disabled = true; setMsg($('sessmsg'), '촬영 중…', '');
+  const r = await api('/api/capture', {step: +$('step').value, shots: +$('shots').value, average: +$('avg').value});
+  busy = false;
+  r.ok ? setMsg($('sessmsg'), `${r.captured.length}장 저장 (총 ${r.count}) · 마지막 frame id ${r.captured.at(-1).frame_id}`, 'ok') : setMsg($('sessmsg'), r.error, 'bad');
+  poll();
+}
+$('bcap').onclick = capture;
+document.addEventListener('keydown', e => { if (e.code === 'Space' && e.target.tagName !== 'INPUT') { e.preventDefault(); capture(); } });
+document.querySelectorAll('[data-apply]').forEach(b => b.onclick = async () => {
+  const name = b.dataset.apply, v = $(b.dataset.src).value;
+  if (!confirm(`카메라 ${name} 값을 ${v}(으)로 변경합니다. 진행할까요?`)) return;
+  const r = await api('/api/apply', {name, value: name === 'pixel_format' ? v : +v});
+  r.ok ? setMsg($('setmsg'), `적용됨: ${name} = ${v}`, 'ok') : setMsg($('setmsg'), r.error, 'bad');
+  filled = false; poll();
+});
+// Live view: pull the newest frame only after the previous one has been displayed (no queue can build up).
+let lastFrame = -1, shownFrames = 0, t0 = performance.now();
+async function liveLoop() {
+  for (;;) {
+    try {
+      const sent = performance.now();
+      const r = await fetch(`/live.jpg?after=${lastFrame}&t=${Date.now()}`, {cache: 'no-store'});
+      const age = +(r.headers.get('X-Frame-Age-Ms') || 0);
+      lastFrame = +(r.headers.get('X-Frame') || lastFrame);
+      const url = URL.createObjectURL(await r.blob());
+      const img = $('live'), old = img.src;
+      await new Promise(res => { img.onload = res; img.onerror = res; img.src = url; });
+      if (old.startsWith('blob:')) URL.revokeObjectURL(old);
+      const total = Math.round(age + (performance.now() - sent));
+      shownFrames++;
+      const el = performance.now() - t0;
+      if (el > 1000) { $('lat').textContent = `표시 ${(shownFrames * 1000 / el).toFixed(1)} fps · 지연 ≈ ${total} ms`; shownFrames = 0; t0 = performance.now(); }
+    } catch (e) { await new Promise(res => setTimeout(res, 500)); }
+  }
+}
+liveLoop();
+poll(); setInterval(poll, 1000); setTimeout(refreshCrop, 1200); setInterval(refreshCrop, 1500);
+</script>
+</body>
+</html>

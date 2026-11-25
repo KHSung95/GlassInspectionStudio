@@ -1,0 +1,25 @@
+{
+  "generated_at": "2026-11-24T19:55:44",
+  "models": [
+    {
+      "id": "winclip-backbone",
+      "used_by": [
+        "zeroshot.winclip",
+        "zeroshot.clip_patch"
+      ],
+      "open_clip_model": "ViT-B-16-plus-240",
+      "pretrained": "laion400m_e31",
+      "source": "https://github.com/mlfoundations/open_clip/releases/download/v0.2-weights/vit_b_16_plus_240-laion400m_e31-8fb26589.pt",
+      "source_kind": "official open_clip GitHub release",
+      "local_file": "models\\clip_cache\\vit_b_16_plus_240-laion400m_e31-8fb26589.pt",
+      "size": 833559975,
+      "sha256": "8fb26589b9a8bab2e7a683d280e48df89b8e742f3a82132707282620b36facba",
+      "sha256_prefix_expected": "8fb26589",
+      "sha256_verified": true,
+      "open_clip_version": "2.24.0",
+      "anomalib_version": "2.7.1",
+      "license": "open_clip code: MIT (https://github.com/mlfoundations/open_clip/blob/main/LICENSE). Weights: released by the open_clip/LAION authors, trained on LAION-400M \u2014 review the LAION dataset terms before commercial deployment.",
+      "anomalib_license": "Apache-2.0"
+    }
+  ]
+}
