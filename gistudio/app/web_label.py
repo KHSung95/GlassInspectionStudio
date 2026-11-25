@@ -88,7 +88,7 @@ class LabelServer:
         a = st.get(aid)
         if a is None:
             raise KeyError(aid)
-        changes = {k: d[k] for k in ("class_name", "label_state", "visibility", "verdict") if k in d}
+        changes = {k: d[k] for k in ("class_name", "label_state", "visibility", "verdict", "geometry") if k in d}
         if d.get("review") == "confirm":
             changes["attributes"] = {**a["attributes"], "reviewed_by": self.author}
             changes["confirmed"] = 1

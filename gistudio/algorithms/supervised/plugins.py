@@ -6,7 +6,8 @@ import numpy as np
 from ..base import Candidate, InspectionAlgorithm, InspectionResult, ParamSpec, create, register
 from ..classical import ops
 
-CHANNEL_CLASS = {"black_spot": "Black Spot", "bubble": "Bubble", "intensity": "Intensity / Transparency Defect"}
+CHANNEL_CLASS = {"black_spot": "Black Spot", "bubble": "Bubble", "intensity": "Intensity / Transparency Defect",
+                 "linear_void": "Linear / Broken Void", "tint": "Faint Tint"}
 _CK_CACHE: dict = {}
 
 

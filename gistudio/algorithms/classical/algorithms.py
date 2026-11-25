@@ -246,6 +246,75 @@ class GradientTexture(InspectionAlgorithm):
                                                                          "gradient": ops.gradient_mag(x)})
 
 
+# =========================================================================== linear / broken voids
+@register
+class RidgeVoidDetector(InspectionAlgorithm):
+    """Thin elongated structures (linear or boomerang-like broken internal voids, chains of tiny voids).
+
+    Multi-scale Hessian ridge strength (largest |eigenvalue| across scales, scale-normalised) for dark and/or
+    bright lines, then connected components filtered by elongation. Score = peak ridge strength / noise sigma.
+    """
+    algorithm_id = "classical.ridge_void"
+    display_name = "Linear / broken void (Hessian ridge)"
+    default_class = "Linear / Broken Void"
+    score_semantics = "scale-normalised Hessian ridge strength / noise sigma (not a probability)"
+    params_spec = [ParamSpec("sigma_min", "float", 1.0, 0.5, 20, 0.5),
+                   ParamSpec("sigma_max", "float", 3.0, 0.5, 40, 0.5),
+                   ParamSpec("n_scales", "int", 3, 1, 8),
+                   ParamSpec("polarity", "choice", "both", choices=["dark", "bright", "both"]),
+                   ParamSpec("threshold", "float", 8.0, 0.5, 200, 0.5),
+                   ParamSpec("min_length", "float", 15.0, 1, 5000, 1, help="component major axis (px)"),
+                   ParamSpec("min_elongation", "float", 3.0, 1.0, 50, 0.5, help="major / minor axis"),
+                   ParamSpec("max_candidates", "int", 300, 1, 100000)]
+
+    def _run(self, image, meta):
+        p = self.params
+        x = ops.f32(image)
+        sig = ops.noise_sigma_meta(image, meta)
+        sigmas = list(np.geomspace(p["sigma_min"], max(p["sigma_min"], p["sigma_max"]), int(p["n_scales"])))
+        best = np.zeros_like(x)
+        for s in sigmas:
+            g = ops.gauss(x, s)
+            dxx = cv2.Sobel(g, cv2.CV_32F, 2, 0, ksize=3)
+            dyy = cv2.Sobel(g, cv2.CV_32F, 0, 2, ksize=3)
+            dxy = cv2.Sobel(g, cv2.CV_32F, 1, 1, ksize=3)
+            tmp = np.sqrt((dxx - dyy) ** 2 + 4 * dxy ** 2)
+            l1 = 0.5 * (dxx + dyy + tmp)      # largest eigenvalue
+            l2 = 0.5 * (dxx + dyy - tmp)      # smallest eigenvalue
+            # dark line on bright background -> large positive l1 across the line; bright line -> negative l2
+            r = np.zeros_like(x)
+            if p["polarity"] in ("dark", "both"):
+                r = np.maximum(r, np.where(np.abs(l1) > 2 * np.abs(l2), l1, 0))
+            if p["polarity"] in ("bright", "both"):
+                r = np.maximum(r, np.where(np.abs(l2) > 2 * np.abs(l1), -l2, 0))
+            best = np.maximum(best, (s * s) * r / 4.0)
+        score = best / sig
+        mask = (score >= p["threshold"]).astype(np.uint8)
+        out = []
+        n, lab, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        for i in range(1, n):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area < 5:
+                continue
+            ys, xs = np.nonzero(lab[stats[i, cv2.CC_STAT_TOP]:stats[i, cv2.CC_STAT_TOP] + stats[i, cv2.CC_STAT_HEIGHT],
+                                    stats[i, cv2.CC_STAT_LEFT]:stats[i, cv2.CC_STAT_LEFT] + stats[i, cv2.CC_STAT_WIDTH]] == i)
+            cov = np.cov(np.stack([xs, ys]).astype(np.float64)) if len(xs) > 2 else np.eye(2)
+            ev = np.sort(np.linalg.eigvalsh(cov))[::-1]
+            major, minor = 4 * np.sqrt(max(ev[0], 1e-6)), 4 * np.sqrt(max(ev[1], 1e-6))
+            elong = major / max(minor, 1.0)
+            if major < p["min_length"] or elong < p["min_elongation"]:
+                continue
+            x0, y0 = int(stats[i, cv2.CC_STAT_LEFT]), int(stats[i, cv2.CC_STAT_TOP])
+            w, h = int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT])
+            sc = float(score[y0:y0 + h, x0:x0 + w][lab[y0:y0 + h, x0:x0 + w] == i].max())
+            out.append(Candidate(None, f"{self.algorithm_id}@{self.version}", self.algorithm_id, self.default_class, sc,
+                                 "bbox", {"x0": float(x0), "y0": float(y0), "x1": float(x0 + w), "y1": float(y0 + h)},
+                                 area_px=area, features={"length": float(major), "elongation": float(elong)}))
+        out.sort(key=lambda c: -c.score)
+        return InspectionResult(out[: p["max_candidates"]], {"ridge_snr": score}, preprocess={"noise_sigma": sig,
+                                                                                               "sigmas": sigmas})
+
+
 # =========================================================================== bubbles / shape
 @register
 class BubbleContourDetector(InspectionAlgorithm):

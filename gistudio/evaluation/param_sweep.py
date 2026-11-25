@@ -38,9 +38,10 @@ from .metrics import EvalConfig, evaluate_at
 
 SPOT_CLASSES = ["Black Spot"]
 BUBBLE_CLASSES = ["Bubble", "Open Bubble", "Closed Bubble"]
-AREA_CLASSES = ["Intensity / Transparency Defect"]
+AREA_CLASSES = ["Intensity / Transparency Defect", "Faint Tint"]
+LINEAR_CLASSES = ["Linear / Broken Void"]
 
-# Explicit, physically sensible grids (threshold handled analytically, so it is not in the grid).
+# Explicit, physically sensible grids (the threshold has its own grid below).
 SPACES: dict[str, dict[str, list]] = {
     "classical.blackhat": {"kernel": [5, 9, 15, 21], "pre_sigma": [0.0, 1.2], "min_area": [1, 2], "max_area": [60, 400]},
     "classical.dog": {"sigma_small": [0.7, 1.0, 1.5], "sigma_large": [3.0, 4.0, 6.0, 8.0], "max_area": [60, 400]},
@@ -55,6 +56,8 @@ SPACES: dict[str, dict[str, list]] = {
     "classical.gradient_texture": {"window": [9, 15, 25], "context": [101, 151, 301], "min_area": [20, 30, 60]},
     "classical.bubble_contour": {"sigma_min": [1.0, 2.0], "sigma_max": [6.0, 8.0, 12.0],
                                  "min_circularity": [0.3, 0.5, 0.7]},
+    "classical.ridge_void": {"sigma_min": [1.0, 2.0], "sigma_max": [3.0, 6.0], "polarity": ["dark", "both"],
+                             "min_length": [15.0, 40.0], "min_elongation": [3.0, 5.0]},
 }
 DEFAULT_THRESHOLD_GRID = [4.0, 6.0, 8.0, 11.0, 16.0, 22.0, 32.0, 45.0, 64.0]
 THRESHOLD_GRID = {"classical.local_contrast": [4.0, 6.0, 8.0, 12.0, 16.0, 24.0],
@@ -71,9 +74,11 @@ def default_gt_classes(algorithm_id: str) -> list[str]:
         return SPOT_CLASSES
     if cls == "Bubble":
         return BUBBLE_CLASSES
-    if cls.startswith("Intensity"):
+    if cls.startswith("Intensity") or cls == "Faint Tint":
         return AREA_CLASSES
-    return SPOT_CLASSES + BUBBLE_CLASSES + AREA_CLASSES
+    if cls == "Linear / Broken Void":
+        return LINEAR_CLASSES
+    return SPOT_CLASSES + BUBBLE_CLASSES + AREA_CLASSES + LINEAR_CLASSES
 
 
 @dataclass
@@ -92,6 +97,7 @@ class SweepConfig:
     max_candidates: int = 3000
     min_useful_recall: float = 0.3    # low-FP / zero-FP presets below this recall are not recommended
     threshold_grid: list | None = None  # None -> per-algorithm default grid
+    max_candidates_per_mp: float = 2.0  # review budget: unverified candidates per megapixel (review_budget preset)
 
     def to_dict(self):
         return asdict(self)
@@ -187,7 +193,8 @@ def _detect(alg_id: str, params: dict, truths: list[FrameTruth], max_cands: int)
                               "region": "negative" if t.known_neg[iy, ix] else "unknown"})
         cands.sort(key=lambda d: -d["score"])
         frames[t.frame["id"]] = {"frame": t.frame, "gts": t.gts, "cands": cands[:max_cands],
-                                 "fully_reviewed": t.fully_reviewed}
+                                 "fully_reviewed": t.fully_reviewed,
+                                 "area_px": sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in t.rects)}
     return frames, (time.perf_counter() - t0) * 1000 / max(1, len(truths))
 
 
@@ -199,6 +206,10 @@ def _metrics(frames: dict, thr: float, tol: float) -> dict:
     rec = r["recall"] or 0.0
     r["f1_verified"] = 2 * p * rec / (p + rec) if (p + rec) else 0.0
     r["unverified_per_frame"] = r["unverified"] / n
+    # false-alarm density over the processed area (crops differ in size): verified FP + unverified per megapixel.
+    # With few negative labels this is the practical "review burden" measure.
+    mp = sum(fd.get("area_px", 0) for fd in frames.values()) / 1e6
+    r["false_alarms_per_mp"] = (r["fp_verified"] + r["unverified"]) / mp if mp > 0 else None
     return r
 
 
@@ -228,6 +239,9 @@ def _pick(trials: list[dict], cfg: SweepConfig) -> dict[str, dict]:
     zf = [t for t in useful if t["m"]["fp_verified"] == 0]
     if zf:
         out["zero_verified_fp"] = max(zf, key=lambda t: ((t["m"]["recall"] or 0), -t["m"]["unverified_per_frame"]))
+    rb = [t for t in useful if (t["m"].get("false_alarms_per_mp") or 0) <= cfg.max_candidates_per_mp]
+    if rb:
+        out["review_budget"] = max(rb, key=lambda t: ((t["m"]["recall"] or 0), -(t["m"].get("false_alarms_per_mp") or 0)))
     return out
 
 
@@ -236,6 +250,7 @@ DESCRIPTIONS = {
     "high_recall": "recall ≥ target with the fewest false/unverified detections",
     "low_fp": "verified FP/frame ≤ budget with the highest recall",
     "zero_verified_fp": "no detection on verified-normal areas, highest recall",
+    "review_budget": "highest recall with ≤ N false/unverified candidates per megapixel (review burden)",
 }
 
 
@@ -334,7 +349,7 @@ def run_sweep(project: Project, cfg: SweepConfig, progress=None, stop=None) -> d
 
 def _short(m: dict) -> dict:
     keys = ("threshold", "tp", "fn", "fp_verified", "unverified", "recall", "precision_verified", "f1_verified",
-            "fp_per_frame", "unverified_per_frame", "loc_error_mean")
+            "fp_per_frame", "unverified_per_frame", "false_alarms_per_mp", "loc_error_mean")
     return {k: (round(m[k], 4) if isinstance(m.get(k), float) else m.get(k)) for k in keys}
 
 

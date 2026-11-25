@@ -21,6 +21,9 @@ def test_label_server_roundtrip(project, tmp_path):
                                                         attributes={"provisional_by": "claude-pilot"})
     c = srv.update(prov, {"review": "confirm"})
     assert c["attributes"]["reviewed_by"] == "operator"
+    moved = srv.update(a["id"], {"geometry": {"x": 12.5, "y": 6.5, "r": 2}})
+    assert moved["geometry"]["x"] == 12.5
+    assert "Linear / Broken Void" in project.class_map() and "Faint Tint" in project.class_map()
     srv.delete(a["id"])
     assert [x["id"] for x in srv.anns(f["id"])] == [prov]
     assert srv.frames()[0]["n_pos"] == 1

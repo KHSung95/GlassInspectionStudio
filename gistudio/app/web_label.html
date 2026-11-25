@@ -42,10 +42,12 @@ select{background:#12141a;color:var(--text);border:1px solid var(--line);border-
       <option value="positive">Positive</option><option value="negative">Negative</option>
       <option value="unknown">Unknown</option><option value="ignore">Ignore</option>
     </select>
-    <button id="tpoint" class="on" title="P">Point</button><button id="tbox" title="B">Box</button>
+    <button id="tsel" class="on" title="V: 선택·이동 / 빈 곳 드래그 = 화면 이동">선택·이동 (V)</button>
+    <button id="tpoint" title="P">점 (P)</button><button id="tbox" title="B">박스 (B)</button>
   </div>
   <div class="grp">
-    <button id="fit" title="F">Fit</button><button id="one" title="Z">1:1</button>
+    <button id="fit" title="R / F / 더블클릭" style="font-weight:600">⟲ 전체 보기 (R)</button><button id="one" title="Z">1:1 (Z)</button>
+    <button id="zin" title="+">＋</button><button id="zout" title="-">－</button>
     <select id="mode"><option value="stretch">자동 대비</option><option value="full">원 범위</option></select>
   </div>
   <div class="grp">
@@ -62,11 +64,13 @@ select{background:#12141a;color:var(--text);border:1px solid var(--line);border-
     <div id="anns"></div>
     <h4>사용법</h4>
     <div class="help">
-      <kbd>휠</kbd> 확대/축소 · <kbd>우클릭/가운데 드래그</kbd> 또는 <kbd>Space</kbd>+드래그 이동<br>
-      <kbd>P</kbd> 점 · <kbd>B</kbd> 박스 · 클릭/드래그로 표시 (원본 좌표로 저장)<br>
-      <kbd>1</kbd>~<kbd>9</kbd>·<kbd>D</kbd><kbd>S</kbd><kbd>M</kbd> 클래스 · <kbd>N</kbd> Positive↔Negative<br>
-      <kbd>Ctrl</kbd>+클릭 라벨 선택 · <kbd>Del</kbd> 삭제 · <kbd>C</kbd> 확인(AI 임시 라벨 승인)<br>
-      <kbd>←</kbd>/<kbd>→</kbd> 이전/다음 프레임 · <kbd>F</kbd> 맞춤 · <kbd>Z</kbd> 1:1<br>
+      <b>선택·이동(V)</b>: 라벨 클릭 = 선택, 드래그 = 옮기기, 박스 모서리 드래그 = 크기 조절, 빈 곳 드래그 = 화면 이동<br>
+      <b>점(P) / 박스(B)</b>: 클릭/드래그로 새로 표시 (원본 좌표로 저장)<br>
+      <kbd>휠</kbd> 또는 <kbd>＋</kbd><kbd>－</kbd> 확대/축소 · <kbd>우클릭 드래그</kbd> 어느 도구에서나 화면 이동<br>
+      <kbd>R</kbd>·<kbd>F</kbd>·<b>더블클릭</b> 전체 보기 · <kbd>Z</kbd> 1:1<br>
+      <kbd>1</kbd> 흑점 · <kbd>2</kbd> 기포 · <kbd>3</kbd> 선형/부메랑 파임 · <kbd>4</kbd> 미세 착색 · <kbd>M</kbd> 마커 · <kbd>N</kbd> Positive↔Negative<br>
+      선택한 라벨: 클래스 키로 클래스 변경 · <kbd>Del</kbd> 삭제 · <kbd>C</kbd> 확인 · 오른쪽 목록 클릭 = 그 위치로 이동<br>
+      <kbd>←</kbd>/<kbd>→</kbd> 이전/다음 프레임<br>
       Marker Ink(<kbd>M</kbd>)는 고객 펜 표시를 정상(Negative)으로 지정할 때 사용합니다.
       점선 + 노란 태그는 AI 파일럿의 임시 라벨입니다.
     </div>
@@ -75,7 +79,7 @@ select{background:#12141a;color:var(--text);border:1px solid var(--line);border-
 <script>
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
-let frames = [], classes = [], cur = 0, img = null, anns = [], cls = 'Black Spot', tool = 'point';
+let frames = [], classes = [], cur = 0, img = null, anns = [], cls = 'Black Spot', tool = 'select', moving = null;
 let scale = 1, ox = 0, oy = 0, sel = null, drag = null, panning = null, spaceDown = false;
 const col = n => (classes.find(c => c.name === n) || {color: '#fff'}).color;
 
@@ -172,7 +176,7 @@ function renderAnns() {
     const id = +d.dataset.id;
     d.onclick = e => {
       const act = e.target.dataset.act; sel = id;
-      if (act === 'del') delAnn(id); else if (act === 'confirm') updateAnn(id, {review: 'confirm'}); else if (act === 'goto') gotoAnn(id); else { renderAnns(); draw(); }
+      if (act === 'del') delAnn(id); else if (act === 'confirm') updateAnn(id, {review: 'confirm'}); else gotoAnn(id);
     };
   });
 }
@@ -205,21 +209,54 @@ cv.addEventListener('wheel', e => {
   const ns = Math.min(64, Math.max(0.02, scale * f)); ox = sx - (sx - ox) * ns / scale; oy = sy - (sy - oy) * ns / scale; scale = ns; draw();
 }, {passive: false});
 cv.addEventListener('contextmenu', e => e.preventDefault());
+function cornerHit(a, ix, iy) {
+  if (a.geometry_type !== 'bbox') return null;
+  const g = a.geometry, tol = 10 / scale;
+  for (const [cx, cy, kx, ky] of [[g.x0, g.y0, 'x0', 'y0'], [g.x1, g.y0, 'x1', 'y0'], [g.x0, g.y1, 'x0', 'y1'], [g.x1, g.y1, 'x1', 'y1']])
+    if (Math.abs(ix - cx) < tol && Math.abs(iy - cy) < tol) return [kx, ky];
+  return null;
+}
+cv.addEventListener('dblclick', () => { if (tool === 'select') fit(); });
 cv.addEventListener('mousedown', e => {
   const [ix, iy] = toImg(e.offsetX, e.offsetY);
   if (e.button === 1 || e.button === 2 || spaceDown) { panning = [e.clientX, e.clientY]; return; }
-  if (e.ctrlKey) { sel = nearest(ix, iy); renderAnns(); draw(); return; }
+  if (e.ctrlKey || tool === 'select') {
+    const sa = anns.find(a => a.id === sel), corner = sa && cornerHit(sa, ix, iy);
+    const hit = corner ? sel : nearest(ix, iy);
+    if (hit) {
+      sel = hit; const a = anns.find(x => x.id === hit);
+      moving = {id: hit, start: [ix, iy], orig: JSON.parse(JSON.stringify(a.geometry)), corner, moved: false};
+      renderAnns(); draw();
+    } else if (tool === 'select') { sel = null; renderAnns(); draw(); panning = [e.clientX, e.clientY]; }
+    return;
+  }
   if (tool === 'point') addAnn('point', {x: ix, y: iy, r: 2});
   else drag = {x0: ix, y0: iy, x1: ix, y1: iy};
 });
 window.addEventListener('mousemove', e => {
   if (panning) { ox += (e.clientX - panning[0]) * devicePixelRatio; oy += (e.clientY - panning[1]) * devicePixelRatio; panning = [e.clientX, e.clientY]; draw(); return; }
   const r = cv.getBoundingClientRect(), [ix, iy] = toImg(e.clientX - r.left, e.clientY - r.top);
+  if (moving) {
+    const a = anns.find(x => x.id === moving.id), dx = ix - moving.start[0], dy = iy - moving.start[1], o = moving.orig;
+    if (Math.abs(dx) + Math.abs(dy) > 0.5 / scale) moving.moved = true;
+    if (a.geometry_type === 'point') a.geometry = {...o, x: o.x + dx, y: o.y + dy};
+    else if (a.geometry_type === 'bbox' && moving.corner) { a.geometry = {...o}; a.geometry[moving.corner[0]] = o[moving.corner[0]] + dx; a.geometry[moving.corner[1]] = o[moving.corner[1]] + dy; }
+    else if (a.geometry_type === 'bbox') a.geometry = {x0: o.x0 + dx, y0: o.y0 + dy, x1: o.x1 + dx, y1: o.y1 + dy};
+    draw();
+  }
   if (drag) { drag.x1 = ix; drag.y1 = iy; draw(); }
   $('hud').textContent = `x ${ix.toFixed(1)}  y ${iy.toFixed(1)}  ·  zoom ${(scale).toFixed(2)}×  ·  ${cls} / ${$('state').value} / ${tool}`;
 });
-window.addEventListener('mouseup', () => {
+window.addEventListener('mouseup', async () => {
   panning = null;
+  if (moving) {
+    const m = moving; moving = null;
+    if (m.moved) {
+      const a = anns.find(x => x.id === m.id); let g = a.geometry;
+      if (a.geometry_type === 'bbox') g = {x0: Math.min(g.x0, g.x1), y0: Math.min(g.y0, g.y1), x1: Math.max(g.x0, g.x1), y1: Math.max(g.y0, g.y1)};
+      await updateAnn(m.id, {geometry: g}); msg('위치 수정 저장됨', 'var(--ok)');
+    }
+  }
   if (drag) {
     const g = {x0: Math.min(drag.x0, drag.x1), y0: Math.min(drag.y0, drag.y1), x1: Math.max(drag.x0, drag.x1), y1: Math.max(drag.y0, drag.y1)};
     drag = null;
@@ -232,8 +269,9 @@ document.addEventListener('keydown', e => {
   const k = e.key.toUpperCase();
   const c = classes.find(c => (c.shortcut || '').toUpperCase() === k);
   if (k === 'ARROWRIGHT') loadFrame(cur + 1); else if (k === 'ARROWLEFT') loadFrame(cur - 1);
-  else if (k === 'P') setTool('point'); else if (k === 'B') setTool('box');
-  else if (k === 'F') fit(); else if (k === 'Z') oneToOne();
+  else if (k === 'P') setTool('point'); else if (k === 'B') setTool('box'); else if (k === 'V') setTool('select');
+  else if (k === 'F' || k === 'R' || k === 'HOME') fit(); else if (k === 'Z') oneToOne();
+  else if (k === '+' || k === '=') zoomCenter(1.25); else if (k === '-') zoomCenter(0.8);
   else if (k === 'N') { $('state').value = $('state').value === 'negative' ? 'positive' : 'negative'; }
   else if (k === 'DELETE' || k === 'BACKSPACE') { if (sel) delAnn(sel); }
   else if (k === 'C') { if (sel) updateAnn(sel, {review: 'confirm'}); }
@@ -241,9 +279,17 @@ document.addEventListener('keydown', e => {
   else if (c) setClass(c.name);
 });
 document.addEventListener('keyup', e => { if (e.code === 'Space') spaceDown = false; });
-function setTool(t) { tool = t; $('tpoint').classList.toggle('on', t === 'point'); $('tbox').classList.toggle('on', t === 'box'); }
-$('tpoint').onclick = () => setTool('point'); $('tbox').onclick = () => setTool('box');
-$('fit').onclick = fit; $('one').onclick = oneToOne;
+function setTool(t) {
+  tool = t; $('tsel').classList.toggle('on', t === 'select'); $('tpoint').classList.toggle('on', t === 'point'); $('tbox').classList.toggle('on', t === 'box');
+  cv.style.cursor = t === 'select' ? 'grab' : 'crosshair';
+}
+function zoomCenter(f) {
+  const sx = cv.width / 2, sy = cv.height / 2, ns = Math.min(64, Math.max(0.02, scale * f));
+  ox = sx - (sx - ox) * ns / scale; oy = sy - (sy - oy) * ns / scale; scale = ns; draw();
+}
+$('tsel').onclick = () => setTool('select'); $('tpoint').onclick = () => setTool('point'); $('tbox').onclick = () => setTool('box');
+$('fit').onclick = fit; $('one').onclick = oneToOne; $('zin').onclick = () => zoomCenter(1.25); $('zout').onclick = () => zoomCenter(0.8);
+setTool('select');
 $('mode').onchange = () => loadFrame(cur);
 $('review').onchange = async () => { await api(`/api/frame/${frames[cur].id}/review`, {status: $('review').value}); frames[cur].review_status = $('review').value; renderFrames(); };
 new ResizeObserver(() => { const empty = !(scale > 0); resize(); if (empty) fit(); }).observe($('stage'));

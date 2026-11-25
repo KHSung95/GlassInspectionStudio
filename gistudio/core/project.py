@@ -14,23 +14,30 @@ from .db import Database
 
 DEFAULT_CLASSES = [
     # name, kind, color, shortcut, train_channel
+    # Defect types observed on real samples so far (2026-11): black spot, bubble, linear / boomerang-like broken
+    # internal void, faint tint. Each has its own training channel so models learn them separately.
     ("Black Spot", "defect", "#ff3030", "1", "black_spot"),
     ("Bubble", "defect", "#ff9900", "2", "bubble"),
-    ("Open Bubble", "defect", "#ffbb33", "3", "bubble"),
-    ("Closed Bubble", "defect", "#ffd966", "4", "bubble"),
+    ("Linear / Broken Void", "defect", "#ff5ec4", "3", "linear_void"),
+    ("Faint Tint", "defect", "#b98cff", "4", "tint"),
     ("Intensity / Transparency Defect", "defect", "#cc33ff", "5", "intensity"),
     ("Other Defect", "defect", "#ff66aa", "6", ""),
+    ("Open Bubble", "defect", "#ffbb33", "", "bubble"),
+    ("Closed Bubble", "defect", "#ffd966", "", "bubble"),
     ("Normal Embossing", "normal", "#33cc66", "7", ""),
     ("Normal Engraving", "normal", "#33aa99", "8", ""),
     ("Normal Mold Pattern", "normal", "#2299dd", "9", ""),
+    ("Marker Ink", "normal", "#38d9ff", "M", ""),
     ("Dust", "appearance", "#bbbbbb", "D", ""),
     ("Scratch", "appearance", "#88aacc", "S", ""),
     ("Verified Normal", "normal", "#00ff88", "N", ""),
     ("Unknown", "meta", "#777777", "U", ""),
 ]
 
-# Supervised output channels (U-Net). Order matters (checkpoint metadata stores it).
-TRAIN_CHANNELS = ["black_spot", "bubble", "intensity"]
+# Supervised output channels (U-Net). Order matters (checkpoint metadata stores it); new channels are appended.
+TRAIN_CHANNELS = ["black_spot", "bubble", "intensity", "linear_void", "tint"]
+# Old shortcuts that the current default set reassigns (only cleared if the class still uses the old default).
+_RETIRED_SHORTCUTS = {"Open Bubble": "3", "Closed Bubble": "4"}
 
 
 def now_iso() -> str:
@@ -49,6 +56,8 @@ class Project:
         if not (self.root / self.DB_NAME).exists():
             raise FileNotFoundError(f"Not a Glass Inspection Studio project: {self.root}")
         self.db = Database(self.root / self.DB_NAME)
+        if self.db.one("SELECT COUNT(*) FROM classes")[0]:
+            self.ensure_default_classes()
 
     # ------------------------------------------------------------------ lifecycle
     @classmethod
@@ -83,6 +92,21 @@ class Project:
                 (name, kind, color, sc, ch, i),
             )
         self.db.commit()
+
+    def ensure_default_classes(self) -> list[str]:
+        """Add default classes missing from an older project and release retired default shortcuts.
+        Never deletes classes or changes user-edited ones. Returns the names that were added."""
+        have = self.class_map()
+        added = [c[0] for c in DEFAULT_CLASSES if c[0] not in have]
+        for name, old in _RETIRED_SHORTCUTS.items():
+            if have.get(name, {}).get("shortcut") == old:
+                self.db.execute("UPDATE classes SET shortcut='' WHERE name=?", (name,))
+        self._seed_classes()
+        order = {c[0]: i for i, c in enumerate(DEFAULT_CLASSES)}
+        for name, i in order.items():
+            self.db.execute("UPDATE classes SET sort_order=? WHERE name=?", (i, name))
+        self.db.commit()
+        return added
 
     # ------------------------------------------------------------------ paths
     @property
