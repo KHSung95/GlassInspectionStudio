@@ -30,9 +30,15 @@ def test_console_capture_and_http(project):
         srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(con))
         th = threading.Thread(target=srv.serve_forever, daemon=True); th.start()
         port = srv.server_address[1]
-        st = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=10).read())
+        # one persistent HTTP/1.1 connection, like a browser (new loopback connections are flaky on this host)
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        c.request("GET", "/api/status")
+        st = json.loads(c.getresponse().read())
         assert st["session"]["count"] == 2 and len(st["captures"]) == 2
-        assert urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10).read().startswith(b"<!doctype html>")
+        c.request("GET", "/")
+        assert c.getresponse().read().startswith(b"<!doctype html>")
+        c.close()
         srv.shutdown(); srv.server_close()
     finally:
         con.close()

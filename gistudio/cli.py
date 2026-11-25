@@ -114,6 +114,8 @@ def main(argv=None) -> int:
     p = sub.add_parser("console", help="Local web camera console (live feed + capture) on 127.0.0.1")
     p.add_argument("project"); p.add_argument("--port", type=int, default=8765)
     p.add_argument("--mock", action="store_true"); p.add_argument("--cti", default=None)
+    p.add_argument("--packet-size", type=int, help="WRITE GevSCPSPacketSize at start (needs jumbo frames on the NIC)")
+    p.add_argument("--fps", type=float, help="WRITE AcquisitionFrameRate at start (bandwidth headroom)")
 
     p = sub.add_parser("label", help="Browser draft-labelling page on 127.0.0.1 (no camera)")
     p.add_argument("project"); p.add_argument("--port", type=int, default=8770)
@@ -125,7 +127,12 @@ def main(argv=None) -> int:
         serve_label(a.project, a.port, a.author); return 0
     if a.cmd == "console":
         from .acquisition.web_console import serve
-        serve(a.project, a.port, a.mock, a.cti); return 0
+        startup = {}
+        if a.packet_size:
+            startup["GevSCPSPacketSize"] = a.packet_size
+        if a.fps:
+            startup["AcquisitionFrameRate"] = a.fps
+        serve(a.project, a.port, a.mock, a.cti, startup); return 0
     if a.cmd == "cameras":
         from .acquisition.genicam_camera import DEFAULT_CTI, list_devices
         print(json.dumps(list_devices(a.cti or DEFAULT_CTI), indent=1, default=str)); return 0

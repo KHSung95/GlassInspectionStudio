@@ -1,55 +1,92 @@
 """Run the GenICam camera in its own process; the newest frame is published through shared memory.
 
-Why: inside a busy Python process (HTTP server, JPEG encoding, GUI) the Harvesters acquisition thread competes
-for the GIL and frame delivery stalls for seconds. A dedicated process only grabs, so the newest frame is always
-fresh; consumers copy it from shared memory.
+Why a separate process
+----------------------
+Inside a busy Python process (HTTP server, JPEG encoding, GUI) the Harvesters acquisition thread competes for
+the GIL and frame delivery stalls. A dedicated, higher-priority process only grabs; consumers copy the newest
+frame from shared memory.
 
-The proxy implements the same methods the console/GUI use (open/close/info/grab/set_*), so it is a drop-in.
+Robustness
+----------
+GigE streams can die under load (packet loss, heartbeat timeouts) and native calls may then block forever.
+The parent therefore runs a watchdog: if no new frame arrives for `watchdog_s`, the worker process is killed
+and a fresh one re-opens the camera. Restarts and GenTL stream statistics are exposed via `stats()`.
 """
 from __future__ import annotations
 
 import multiprocessing as mp
 import struct
+import threading
 import time
-import traceback
 from multiprocessing import shared_memory
 
 import numpy as np
 
 HDR = struct.Struct("<qdiii")          # count, timestamp, height, width, itemsize
 HDR_SIZE = 64
+STREAM_STATS = ["StreamDeliveredFrameCount", "StreamLostFrameCount", "StreamIncompleteFrameCount",
+                "StreamDroppedFrameCount", "StreamUnderrunCount", "StreamFailedBufferCount",
+                "StreamReceivedPacketCount", "StreamMissedPacketCount", "StreamPacketResendRequestCount",
+                "StreamPacketResendRequestSuccessCount", "StreamBufferCountResult", "StreamBufferHandlingMode"]
 
 
-def _raise_priority() -> None:
-    """Keep GigE packet handling / heartbeats on time when other work loads the CPU (Windows only)."""
+def _raise_priority() -> str:
+    """Keep GigE packet handling / heartbeats on time when other work loads the CPU (Windows)."""
     try:
         import ctypes
-        ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
-        k32 = ctypes.windll.kernel32
-        k32.SetPriorityClass(k32.GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS)
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k32.SetPriorityClass.restype = wintypes.BOOL
+        k32.GetPriorityClass.argtypes = [wintypes.HANDLE]
+        k32.GetPriorityClass.restype = wintypes.DWORD
+        h = k32.GetCurrentProcess()
+        HIGH, ABOVE = 0x00000080, 0x00008000
+        ok = k32.SetPriorityClass(h, HIGH) or k32.SetPriorityClass(h, ABOVE)
+        return {HIGH: "high", ABOVE: "above_normal"}.get(k32.GetPriorityClass(h), f"0x{k32.GetPriorityClass(h):x}") \
+            if ok else f"unchanged (error {ctypes.get_last_error()})"
+    except Exception as e:
+        return f"unchanged ({e!r})"
+
+
+def _stream_stats(cam) -> dict:
+    out = {}
+    try:
+        nm = cam._ia.data_streams[0].node_map
     except Exception:
-        pass
+        return out
+    for n in STREAM_STATS:
+        try:
+            out[n] = getattr(nm, n).value
+        except Exception:
+            pass
+    return out
 
 
-def _worker(cti: str, shm_name: str, cap: int, lock, cmd, ready):
+def _worker(cti: str, shm_name: str, cap: int, lock, cmd, ready, startup: dict | None = None):
     from .genicam_camera import GenICamCamera
-    _raise_priority()
+    prio = _raise_priority()
     shm = shared_memory.SharedMemory(name=shm_name)
     cam = GenICamCamera(cti)
     try:
         cam.open()
-        ready.send({"ok": True, "info": cam.info(), "stream_mode": cam.stream_mode,
-                    "pixel_formats": cam.available_pixel_formats()})
+        applied = {}
+        # explicit, operator-requested feature writes (e.g. GevSCPSPacketSize, AcquisitionFrameRate) before streaming
+        for fname, value in (startup or {}).items():
+            node = getattr(cam.nodes(), fname)
+            node.value = value
+            applied[fname] = node.value
+        ready.send({"ok": True, "info": cam.info(), "stream_mode": cam.stream_mode, "priority": prio,
+                    "pixel_formats": cam.available_pixel_formats(), "applied": applied})
     except Exception as e:
         ready.send({"ok": False, "error": repr(e)})
         shm.close()
         return
-    count = 0
-    misses = 0
-    reconnects = 0
+    with lock:
+        count = HDR.unpack(bytes(shm.buf[:HDR.size]))[0]   # continue numbering across worker restarts
     running = True
     while running:
-        # commands (settings, info, stop) are handled between frames
         while cmd.poll():
             name, arg = cmd.recv()
             try:
@@ -57,6 +94,8 @@ def _worker(cti: str, shm_name: str, cap: int, lock, cmd, ready):
                     running = False; res = None
                 elif name == "info":
                     res = cam.info()
+                elif name == "stats":
+                    res = _stream_stats(cam)
                 else:
                     cam.stop()
                     if name == "exposure":
@@ -66,8 +105,8 @@ def _worker(cti: str, shm_name: str, cap: int, lock, cmd, ready):
                     elif name == "pixel_format":
                         cam.set_pixel_format(str(arg))
                     elif name == "feature":
-                        setattr_name, value = arg
-                        getattr(cam.nodes(), setattr_name).value = value
+                        fname, value = arg
+                        getattr(cam.nodes(), fname).value = value
                     res = cam.info()
                 cmd.send({"ok": True, "result": res})
             except Exception as e:
@@ -76,28 +115,8 @@ def _worker(cti: str, shm_name: str, cap: int, lock, cmd, ready):
             break
         try:
             img = cam.grab(timeout_s=2.0)
-            misses = 0
         except Exception:
-            misses += 1
-            if misses >= 3:
-                # stream is dead (e.g. GigE heartbeat lost under load): reopen the device and resume
-                misses = 0
-                try:
-                    cam.close()
-                except Exception:
-                    pass
-                try:
-                    time.sleep(1.0)
-                    cam = GenICamCamera(cti)
-                    cam.open()
-                    reconnects += 1
-                    with lock:
-                        shm.buf[HDR.size:HDR.size + 8] = struct.pack("<q", reconnects)
-                except Exception:
-                    time.sleep(2.0)
-            else:
-                time.sleep(0.05)
-            continue
+            continue   # the parent watchdog restarts this process if the stream stays dead
         n = img.nbytes
         if n + HDR_SIZE > cap:
             continue
@@ -112,43 +131,110 @@ def _worker(cti: str, shm_name: str, cap: int, lock, cmd, ready):
 
 
 class ProcessCamera:
-    def __init__(self, cti: str | None = None, max_bytes: int = 4128 * 3008 * 2):
+    def __init__(self, cti: str | None = None, max_bytes: int = 4128 * 3008 * 2, watchdog_s: float = 6.0,
+                 startup: dict | None = None):
         from .genicam_camera import DEFAULT_CTI
         self.cti = cti or DEFAULT_CTI
+        self.startup = dict(startup or {})
+        self.applied = {}
         self.cap = max_bytes + HDR_SIZE
+        self.watchdog_s = watchdog_s
         self.shm = None
         self.proc = None
         self._info = {}
         self.stream_mode = None
+        self.priority = None
         self._formats = []
         self._last = 0
         self._ctx = mp.get_context("spawn")
         self.lock = self._ctx.Lock()
+        self._cmd_lock = threading.Lock()
+        self._restarts = 0
+        self._restart_log: list[str] = []
+        self._closing = False
+        self._wd = None
+
+    # ------------------------------------------------------------------ worker lifecycle
+    def _spawn(self, timeout: float = 60.0) -> None:
+        self.cmd, child_cmd = self._ctx.Pipe()
+        ready_r, ready_w = self._ctx.Pipe(duplex=False)
+        self.proc = self._ctx.Process(target=_worker, args=(self.cti, self.shm.name, self.cap, self.lock, child_cmd,
+                                                            ready_w, self.startup), daemon=True)
+        self.proc.start()
+        if not ready_r.poll(timeout):
+            self._kill()
+            raise TimeoutError("camera process did not start")
+        msg = ready_r.recv()
+        if not msg["ok"]:
+            self._kill()
+            raise RuntimeError(msg["error"])
+        self._info, self.stream_mode, self._formats = msg["info"], msg["stream_mode"], msg["pixel_formats"]
+        self.priority = msg.get("priority")
+        self.applied = msg.get("applied", {})
+
+    def _kill(self) -> None:
+        if self.proc is not None:
+            if self.proc.is_alive():
+                self.proc.terminate()
+                self.proc.join(5)
+                if self.proc.is_alive():
+                    self.proc.kill()
+                    self.proc.join(5)
+            self.proc = None
 
     def open(self) -> None:
         self.shm = shared_memory.SharedMemory(create=True, size=self.cap)
         self.shm.buf[:HDR.size] = HDR.pack(0, 0.0, 0, 0, 1)
-        self.cmd, child_cmd = self._ctx.Pipe()
-        ready_r, ready_w = self._ctx.Pipe(duplex=False)
-        self.proc = self._ctx.Process(target=_worker, args=(self.cti, self.shm.name, self.cap, self.lock, child_cmd,
-                                                            ready_w), daemon=True)
-        self.proc.start()
-        if not ready_r.poll(60):
-            self.close(); raise TimeoutError("camera process did not start")
-        msg = ready_r.recv()
-        if not msg["ok"]:
-            self.close(); raise RuntimeError(msg["error"])
-        self._info, self.stream_mode, self._formats = msg["info"], msg["stream_mode"], msg["pixel_formats"]
+        self._spawn()
+        self._wd = threading.Thread(target=self._watchdog, daemon=True)
+        self._wd.start()
+
+    def _header(self):
+        with self.lock:
+            return HDR.unpack(bytes(self.shm.buf[:HDR.size]))
+
+    def _watchdog(self) -> None:
+        last_count, last_change = -1, time.time()
+        while not self._closing:
+            time.sleep(0.5)
+            if self.shm is None:
+                break
+            count, ts = self._header()[:2]
+            if count != last_count:
+                last_count, last_change = count, time.time()
+                continue
+            if time.time() - last_change < self.watchdog_s or self._cmd_lock.locked():
+                continue
+            # no frame for watchdog_s: kill the (possibly blocked) worker and start a fresh one
+            with self._cmd_lock:
+                if self._closing:
+                    break
+                self._restarts += 1
+                self._restart_log.append(time.strftime("%H:%M:%S") + " no frame for %.0fs -> restart" %
+                                         (time.time() - last_change))
+                self._kill()
+                for attempt in range(10):
+                    if self._closing:
+                        return
+                    try:
+                        time.sleep(1.0 + attempt)   # let the camera release the control channel (heartbeat)
+                        self._spawn()
+                        break
+                    except Exception as e:
+                        self._restart_log.append(time.strftime("%H:%M:%S") + f" reopen failed: {e!r}"[:160])
+                last_change = time.time()
 
     def _call(self, name, arg=None, timeout=30.0):
-        self.cmd.send((name, arg))
-        if not self.cmd.poll(timeout):
-            raise TimeoutError(f"camera process did not answer '{name}'")
-        r = self.cmd.recv()
+        with self._cmd_lock:
+            self.cmd.send((name, arg))
+            if not self.cmd.poll(timeout):
+                raise TimeoutError(f"camera process did not answer '{name}'")
+            r = self.cmd.recv()
         if not r["ok"]:
             raise RuntimeError(r["error"])
         return r["result"]
 
+    # ------------------------------------------------------------------ camera API (drop-in)
     def info(self) -> dict:
         return self._info
 
@@ -175,8 +261,15 @@ class ProcessCamera:
         pass  # the worker stops/restarts acquisition itself around feature writes
 
     def reconnects(self) -> int:
-        with self.lock:
-            return struct.unpack("<q", bytes(self.shm.buf[HDR.size:HDR.size + 8]))[0]
+        return self._restarts
+
+    def stats(self) -> dict:
+        try:
+            s = self._call("stats", timeout=3.0)
+        except Exception as e:
+            s = {"error": repr(e)}
+        return {"worker_restarts": self._restarts, "restart_log": self._restart_log[-5:],
+                "priority": self.priority, "startup_applied": self.applied, "stream": s}
 
     def latest(self) -> tuple[np.ndarray | None, int, float]:
         with self.lock:
@@ -191,19 +284,17 @@ class ProcessCamera:
         """Newest frame that is newer than the previously returned one."""
         t0 = time.time()
         while True:
-            with self.lock:
-                count = HDR.unpack(bytes(self.shm.buf[:HDR.size]))[0]
+            count = self._header()[0]
             if count > self._last:
                 img, c, _ = self.latest()
                 self._last = c
                 return img
             if time.time() - t0 > timeout_s:
                 raise TimeoutError("no new frame")
-            if self.proc is not None and not self.proc.is_alive():
-                raise RuntimeError("camera process exited")
             time.sleep(0.004)
 
     def close(self) -> None:
+        self._closing = True
         try:
             if self.proc is not None and self.proc.is_alive():
                 try:
@@ -211,10 +302,8 @@ class ProcessCamera:
                 except Exception:
                     pass
                 self.proc.join(10)
-                if self.proc.is_alive():
-                    self.proc.terminate()
+            self._kill()
         finally:
-            self.proc = None
             if self.shm is not None:
                 try:
                     self.shm.close(); self.shm.unlink()

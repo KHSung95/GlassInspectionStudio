@@ -14,6 +14,7 @@ if not exist "%PY%" (
 )
 cd /d "%ROOT%"
 start "" http://127.0.0.1:8765
-"%PY%" -m gistudio.cli console "%PROJECT%" --port 8765
+rem 8192-byte GigE packets need Jumbo Frame (9014) on the camera NIC; 5 fps keeps ~50% link headroom on 1 GbE.
+"%PY%" -m gistudio.cli console "%PROJECT%" --port 8765 --packet-size 8192 --fps 5
 pause
 endlocal

@@ -315,6 +315,8 @@ def make_handler(con: Console):
                     self.wfile.write(png)
                 elif u.path == "/api/status":
                     self._json(con.status())
+                elif u.path == "/api/stream_stats":
+                    self._json(con.cam.stats() if hasattr(con.cam, "stats") else {})
                 elif u.path == "/thumb.jpg":
                     self._send(200, con.thumb(int(q.get("i", 0))), "image/jpeg")
                 else:
@@ -348,7 +350,8 @@ def make_handler(con: Console):
     return H
 
 
-def serve(project_dir: str, port: int = 8765, mock: bool = False, cti: str | None = None) -> None:
+def serve(project_dir: str, port: int = 8765, mock: bool = False, cti: str | None = None,
+          startup: dict | None = None) -> None:
     project = Project.open_or_create(project_dir)
     if mock:
         from .mock import MockCamera, MockRotationStage
@@ -363,9 +366,10 @@ def serve(project_dir: str, port: int = 8765, mock: bool = False, cti: str | Non
         cam.grab = grab
     else:
         from .camera_process import ProcessCamera
-        cam = ProcessCamera(cti)       # acquisition in its own process (no GIL contention with the server)
+        cam = ProcessCamera(cti, startup=startup)   # acquisition in its own process (no GIL contention)
     cam.open()
-    print(f"camera stream buffer mode: {getattr(cam, 'stream_mode', None)}", flush=True)
+    print(f"camera stream buffer mode: {getattr(cam, 'stream_mode', None)}, priority: {getattr(cam, 'priority', None)}, "
+          f"startup features: {getattr(cam, 'applied', {})}", flush=True)
     con = Console(project, cam)
     srv = ThreadingHTTPServer(("127.0.0.1", port), make_handler(con))
     srv.daemon_threads = True
