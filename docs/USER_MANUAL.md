@@ -131,7 +131,8 @@ Classical Vision Lab의 **Sweep & recommend…** 버튼을 누르면 확정 라�
 2. 눈금, 숫자, 경계처럼 오검출되기 쉬운 정상 구조물은 Normal ROI(O)로 표시합니다.
    * 이 영역이 있어야 오검출(FP)을 셀 수 있습니다.
 3. 탐색 범위(JSON)를 정합니다. 알고리즘마다 기본값이 있습니다.
-   * Threshold는 탐색 범위에 넣지 않아도 됩니다. 각 조합을 한 번만 실행한 뒤 후보 점수에서 자동으로 sweep합니다.
+   * Threshold는 탐색 범위에 넣지 않아도 됩니다. 알고리즘별 기본 grid(예: 4–64 SNR)를 써서, 조합마다 각 threshold로 실제 검출을 다시 합니다.
+   * threshold를 계산으로만 바꾸지 않는 이유가 있습니다. 연결성분 검출에서는 threshold가 낮으면 작은 흑점이 주변 잉크와 합쳐져, 후보 위치가 달라지기 때문입니다.
 4. 프레임마다 라벨 주변 crop(+margin)만 처리합니다.
    * 프레임 전체의 노이즈 σ를 넘겨주므로, 추천 threshold를 전체 프레임에 그대로 쓸 수 있습니다.
 5. 추천 프리셋은 목적별로 나옵니다.
@@ -185,6 +186,19 @@ Classical Vision Lab의 **Sweep & recommend…** 버튼을 누르면 확정 라�
   * 촬영: 세션을 만들고 Space 또는 *촬영* 버튼을 누릅니다. 원본 TIFF로 저장되고 즉시 프로젝트에 등록됩니다.
   * 카메라 설정: Apply를 누르고 확인 창에서 승인할 때만 카메라에 기록됩니다.
   * 콘솔이 카메라를 점유하는 동안에는 데스크톱 GUI, CLI, SpinView가 카메라에 연결할 수 없습니다. 콘솔을 종료하면 카메라가 해제됩니다.
+* **웹 초안 라벨링:** 브라우저에서 실제 프레임을 원본 해상도로 보면서 결함·정상 영역을 표시합니다. 카메라는 필요 없습니다.
+  ```powershell
+  .\.venv\Scripts\python.exe -m gistudio.cli label C:\dev\gis_real2d --port 8770
+  ```
+  * `Labeling.cmd`를 더블클릭해도 됩니다.
+  * 클래스별로 점(P)이나 박스(B)를 찍고, `N`으로 Positive와 Negative를 전환합니다.
+  * 고객의 펜 표시(O, 글자)는 `Marker Ink`(M) Negative로 지정합니다. 학습·평가에서 정상으로 쓰이고, 검출되면 FP로 계산됩니다.
+  * 사용자가 찍은 라벨에는 `draft` 태그가 붙습니다. AI 파일럿의 임시 라벨(점선, 노란 태그)은 *확인* 또는 *삭제*로 검토합니다.
+  * 표시하지 않은 영역은 Unknown입니다. 마커 원 밖에서 새로 찾은 결함도 그대로 찍으면 됩니다.
+* **결함 종류별 기준:** 검출기마다 담당 결함 클래스를 따로 평가합니다.
+  * 기본 대응: 흑점 → blackhat/dog/log_blob, 기포 → bubble_contour, 명암 결함 → lowfreq 계열
+  * 다른 클래스로 평가하려면 지정합니다. 예: `sweep --algorithm classical.log_blob --classes Bubble`
+  * 딥러닝(U-Net)은 클래스별 출력 채널과 클래스별 유효 마스크로 따로 학습합니다.
 * 파일럿 리포트(고전 CV 기준):
   ```powershell
   .\.venv\Scripts\python.exe tools\pilot_inference.py <project> --bottle NG-001 --sweep

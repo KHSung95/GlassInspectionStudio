@@ -108,12 +108,21 @@ def main(argv=None) -> int:
     p.add_argument("--margin", type=int, default=160); p.add_argument("--holdout", type=float, default=0.0)
     p.add_argument("--recall-target", type=float, default=0.9); p.add_argument("--fp-budget", type=float, default=0.2)
     p.add_argument("--save", action="store_true", help="save recommendations as project presets")
+    p.add_argument("--classes", default="", help="GT classes for this detector, comma separated "
+                                                 "(default: the detector's own defect type)")
 
     p = sub.add_parser("console", help="Local web camera console (live feed + capture) on 127.0.0.1")
     p.add_argument("project"); p.add_argument("--port", type=int, default=8765)
     p.add_argument("--mock", action="store_true"); p.add_argument("--cti", default=None)
 
+    p = sub.add_parser("label", help="Browser draft-labelling page on 127.0.0.1 (no camera)")
+    p.add_argument("project"); p.add_argument("--port", type=int, default=8770)
+    p.add_argument("--author", default="operator")
+
     a = ap.parse_args(argv)
+    if a.cmd == "label":
+        from .app.web_label import serve as serve_label
+        serve_label(a.project, a.port, a.author); return 0
     if a.cmd == "console":
         from .acquisition.web_console import serve
         serve(a.project, a.port, a.mock, a.cti); return 0
@@ -197,7 +206,8 @@ def main(argv=None) -> int:
         from .evaluation.param_sweep import SweepConfig, labelled_frames, run_sweep, save_presets
         bids = [b["id"] for b in prj.bottles() if b["bottle_code"] == a.bottle] if a.bottle else None
         fids = labelled_frames(prj, bids)
-        r = run_sweep(prj, SweepConfig(a.algorithm, fids, None, None, a.tol, a.margin, a.max_combos, 0,
+        gtc = [c.strip() for c in a.classes.split(",") if c.strip()] or None
+        r = run_sweep(prj, SweepConfig(a.algorithm, fids, None, gtc, a.tol, a.margin, a.max_combos, 0,
                                        a.recall_target, a.fp_budget, a.holdout), _progress)
         print(json.dumps({k: v for k, v in r.items() if k != "config"}, indent=1, default=str))
         if a.save:

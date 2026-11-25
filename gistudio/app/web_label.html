@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Draft Labeling</title>
+<style>
+:root{--bg:#15171b;--panel:#1e2127;--line:#2e323a;--text:#e3e6ea;--muted:#9aa1ab;--accent:#4da3ff;--ok:#3ecf8e;--warn:#ffb454;--bad:#ff6b6b}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:13px/1.4 system-ui,"Segoe UI","Malgun Gothic",sans-serif;display:grid;grid-template-rows:auto 1fr;}
+header{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--line)}
+header .grp{display:flex;gap:4px;align-items:center;padding-right:8px;border-right:1px solid var(--line)}
+button{background:#2a2f38;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 8px;font:inherit;cursor:pointer}
+button.on{outline:2px solid var(--accent)}
+.wrap{display:grid;grid-template-columns:200px minmax(0,1fr) 290px;min-height:0}
+@media (max-width:900px){.wrap{grid-template-columns:1fr}}
+aside{background:var(--panel);border-right:1px solid var(--line);overflow:auto;min-height:0}
+aside.right{border-right:0;border-left:1px solid var(--line);padding:8px}
+.frame{padding:5px 8px;border-bottom:1px solid var(--line);cursor:pointer;font-size:12px}
+.frame.cur{background:#26354a}
+.frame small{color:var(--muted)}
+#stage{position:relative;overflow:hidden;background:#000;min-height:0}
+canvas{display:block;width:100%;height:100%}
+#hud{position:absolute;left:8px;bottom:6px;color:var(--muted);font-size:12px;background:rgba(0,0,0,.55);padding:2px 6px;border-radius:3px}
+.ann{border:1px solid var(--line);border-radius:4px;padding:5px;margin-bottom:5px;font-size:12px;cursor:pointer}
+.ann.sel{border-color:var(--accent)}
+.ann .row{display:flex;gap:4px;margin-top:4px}
+.tag{display:inline-block;padding:0 5px;border-radius:8px;font-size:11px;margin-left:4px;background:#333}
+.tag.prov{background:#5a4210;color:#ffd38a}.tag.draft{background:#123d2c;color:#8ff0c4}
+h4{margin:6px 0;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.help{color:var(--muted);font-size:11.5px;line-height:1.5}
+kbd{background:#2a2f38;border:1px solid var(--line);border-radius:3px;padding:0 4px;font-size:11px}
+select{background:#12141a;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px}
+</style>
+</head>
+<body>
+<header>
+  <div class="grp" id="classes"></div>
+  <div class="grp">
+    <select id="state" title="label state (N: toggle Negative)">
+      <option value="positive">Positive</option><option value="negative">Negative</option>
+      <option value="unknown">Unknown</option><option value="ignore">Ignore</option>
+    </select>
+    <button id="tpoint" class="on" title="P">Point</button><button id="tbox" title="B">Box</button>
+  </div>
+  <div class="grp">
+    <button id="fit" title="F">Fit</button><button id="one" title="Z">1:1</button>
+    <select id="mode"><option value="stretch">자동 대비</option><option value="full">원 범위</option></select>
+  </div>
+  <div class="grp">
+    <span style="color:var(--muted)">프레임 검토</span>
+    <select id="review"><option>unreviewed</option><option>in_progress</option><option>reviewed</option></select>
+  </div>
+  <span id="msg" style="color:var(--muted)"></span>
+</header>
+<div class="wrap">
+  <aside id="frames"></aside>
+  <div id="stage"><canvas id="cv"></canvas><div id="hud"></div></div>
+  <aside class="right">
+    <h4>이 프레임의 라벨</h4>
+    <div id="anns"></div>
+    <h4>사용법</h4>
+    <div class="help">
+      <kbd>휠</kbd> 확대/축소 · <kbd>우클릭/가운데 드래그</kbd> 또는 <kbd>Space</kbd>+드래그 이동<br>
+      <kbd>P</kbd> 점 · <kbd>B</kbd> 박스 · 클릭/드래그로 표시 (원본 좌표로 저장)<br>
+      <kbd>1</kbd>~<kbd>9</kbd>·<kbd>D</kbd><kbd>S</kbd><kbd>M</kbd> 클래스 · <kbd>N</kbd> Positive↔Negative<br>
+      <kbd>Ctrl</kbd>+클릭 라벨 선택 · <kbd>Del</kbd> 삭제 · <kbd>C</kbd> 확인(AI 임시 라벨 승인)<br>
+      <kbd>←</kbd>/<kbd>→</kbd> 이전/다음 프레임 · <kbd>F</kbd> 맞춤 · <kbd>Z</kbd> 1:1<br>
+      Marker Ink(<kbd>M</kbd>)는 고객 펜 표시를 정상(Negative)으로 지정할 때 사용합니다.
+      점선 + 노란 태그는 AI 파일럿의 임시 라벨입니다.
+    </div>
+  </aside>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+let frames = [], classes = [], cur = 0, img = null, anns = [], cls = 'Black Spot', tool = 'point';
+let scale = 1, ox = 0, oy = 0, sel = null, drag = null, panning = null, spaceDown = false;
+const col = n => (classes.find(c => c.name === n) || {color: '#fff'}).color;
+
+async function api(p, body) {
+  const r = await fetch(p, body ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)} : {});
+  return r.json();
+}
+function msg(t, c) { $('msg').textContent = t; $('msg').style.color = c || 'var(--muted)'; }
+
+async function init() {
+  classes = (await api('/api/classes')).filter(c => c.kind !== 'meta' || c.name === 'Unknown');
+  $('classes').innerHTML = classes.map(c => `<button data-c="${c.name}" style="border-left:4px solid ${c.color}">${c.shortcut ? '[' + c.shortcut + '] ' : ''}${c.name}</button>`).join('');
+  $('classes').querySelectorAll('button').forEach(b => b.onclick = () => setClass(b.dataset.c));
+  setClass(cls);
+  frames = await api('/api/frames');
+  renderFrames();
+  await loadFrame(0);
+}
+function setClass(n) {
+  if (sel) { updateAnn(sel, {class_name: n}); }
+  cls = n;
+  $('classes').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.c === n));
+  const k = (classes.find(c => c.name === n) || {}).kind;
+  if (k === 'normal') $('state').value = 'negative'; else if (k === 'defect') $('state').value = 'positive';
+}
+function renderFrames() {
+  $('frames').innerHTML = frames.map((f, i) => `<div class="frame ${i === cur ? 'cur' : ''}" data-i="${i}">${i}. ${f.name}<br><small>${f.bottle}/${f.session} · 라벨 ${f.n_ann} (결함 ${f.n_pos}) · ${f.review_status}</small></div>`).join('');
+  $('frames').querySelectorAll('.frame').forEach(d => d.onclick = () => loadFrame(+d.dataset.i));
+}
+async function loadFrame(i) {
+  cur = (i + frames.length) % frames.length; sel = null;
+  const f = frames[cur];
+  msg('불러오는 중…');
+  const im = new Image();
+  im.src = `/api/frame/${f.id}/image.jpg?mode=${$('mode').value}`;
+  await im.decode();
+  const first = !img; img = im;
+  anns = await api(`/api/frame/${f.id}/anns`);
+  $('review').value = f.review_status;
+  if (first || !(scale > 0)) { resize(); fit(); }
+  renderFrames(); renderAnns(); draw(); msg(`${f.name} · ${f.w}×${f.h}`);
+}
+async function refreshAnns() {
+  const f = frames[cur];
+  anns = await api(`/api/frame/${f.id}/anns`);
+  f.n_ann = anns.length; f.n_pos = anns.filter(a => a.label_state === 'positive').length;
+  renderFrames(); renderAnns(); draw();
+}
+function resize() { cv.width = cv.clientWidth * devicePixelRatio; cv.height = cv.clientHeight * devicePixelRatio; draw(); }
+function fit() {
+  if (!img) return;
+  const W = cv.width, H = cv.height;
+  scale = Math.min(W / img.width, H / img.height); ox = (W - img.width * scale) / 2; oy = (H - img.height * scale) / 2; draw();
+}
+function oneToOne() {
+  const cx = cv.width / 2, cy = cv.height / 2, ix = (cx - ox) / scale, iy = (cy - oy) / scale;
+  scale = 1; ox = cx - ix; oy = cy - iy; draw();
+}
+const toImg = (sx, sy) => [(sx * devicePixelRatio - ox) / scale, (sy * devicePixelRatio - oy) / scale];
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height);
+  if (!img) return;
+  ctx.imageSmoothingEnabled = scale < 1;
+  ctx.setTransform(scale, 0, 0, scale, ox, oy);
+  ctx.drawImage(img, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  for (const a of anns) {
+    const c = col(a.class_name), g = a.geometry, prov = a.attributes && a.attributes.provisional_by && !a.attributes.reviewed_by;
+    ctx.strokeStyle = c; ctx.lineWidth = a.id === sel ? 3 : 1.6;
+    ctx.setLineDash(prov ? [5, 4] : a.label_state === 'unknown' ? [2, 3] : []);
+    if (a.geometry_type === 'point') {
+      const x = g.x * scale + ox, y = g.y * scale + oy, r = Math.max(7, (g.r || 2) * scale + 5);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x - r - 5, y); ctx.lineTo(x - r + 3, y); ctx.moveTo(x + r - 3, y); ctx.lineTo(x + r + 5, y); ctx.stroke();
+    } else if (a.geometry_type === 'bbox') {
+      ctx.strokeRect(g.x0 * scale + ox, g.y0 * scale + oy, (g.x1 - g.x0) * scale, (g.y1 - g.y0) * scale);
+      if (a.label_state === 'negative') { ctx.fillStyle = c + '22'; ctx.fillRect(g.x0 * scale + ox, g.y0 * scale + oy, (g.x1 - g.x0) * scale, (g.y1 - g.y0) * scale); }
+    } else if (a.geometry_type === 'polygon') {
+      ctx.beginPath(); g.points.forEach(([px, py], k) => k ? ctx.lineTo(px * scale + ox, py * scale + oy) : ctx.moveTo(px * scale + ox, py * scale + oy)); ctx.closePath(); ctx.stroke();
+    }
+  }
+  ctx.setLineDash([]);
+  if (drag) { ctx.strokeStyle = col(cls); ctx.lineWidth = 1.5; ctx.strokeRect(drag.x0 * scale + ox, drag.y0 * scale + oy, (drag.x1 - drag.x0) * scale, (drag.y1 - drag.y0) * scale); }
+}
+function renderAnns() {
+  $('anns').innerHTML = anns.map(a => {
+    const prov = a.attributes && a.attributes.provisional_by, rev = a.attributes && a.attributes.reviewed_by, draft = a.attributes && a.attributes.draft;
+    const g = a.geometry, pos = a.geometry_type === 'point' ? `(${g.x.toFixed(0)}, ${g.y.toFixed(0)})` : a.geometry_type;
+    return `<div class="ann ${a.id === sel ? 'sel' : ''}" data-id="${a.id}"><b style="color:${col(a.class_name)}">${a.class_name}</b> · ${a.label_state} ${pos}
+      ${prov && !rev ? '<span class="tag prov">AI 임시</span>' : ''}${rev ? '<span class="tag draft">확인됨</span>' : ''}${draft ? '<span class="tag draft">초안</span>' : ''}
+      <div class="row"><button data-act="goto">이동</button>${prov && !rev ? '<button data-act="confirm">확인</button>' : ''}<button data-act="del">삭제</button></div></div>`;
+  }).join('') || '<div class="help">라벨 없음 (표시하지 않은 영역은 Unknown으로 취급)</div>';
+  $('anns').querySelectorAll('.ann').forEach(d => {
+    const id = +d.dataset.id;
+    d.onclick = e => {
+      const act = e.target.dataset.act; sel = id;
+      if (act === 'del') delAnn(id); else if (act === 'confirm') updateAnn(id, {review: 'confirm'}); else if (act === 'goto') gotoAnn(id); else { renderAnns(); draw(); }
+    };
+  });
+}
+function gotoAnn(id) {
+  const a = anns.find(x => x.id === id); if (!a) return;
+  const g = a.geometry, x = a.geometry_type === 'point' ? g.x : (g.x0 + g.x1) / 2, y = a.geometry_type === 'point' ? g.y : (g.y0 + g.y1) / 2;
+  scale = Math.max(scale, 2); ox = cv.width / 2 - x * scale; oy = cv.height / 2 - y * scale; draw(); renderAnns();
+}
+async function addAnn(type, geometry) {
+  const r = await api(`/api/frame/${frames[cur].id}/anns`, {class_name: cls, label_state: $('state').value, geometry_type: type, geometry});
+  if (!r.ok) return msg(r.error, 'var(--bad)');
+  sel = r.ann.id; msg(`저장됨: ${cls} ${$('state').value}`, 'var(--ok)'); await refreshAnns();
+}
+async function updateAnn(id, body) { const r = await api(`/api/ann/${id}`, body); r.ok ? await refreshAnns() : msg(r.error, 'var(--bad)'); }
+async function delAnn(id) { const r = await api(`/api/ann/${id}/delete`, {}); if (r.ok) { sel = null; await refreshAnns(); msg('삭제됨'); } }
+function nearest(ix, iy) {
+  let best = null, bd = 12 / scale;
+  for (const a of anns) {
+    const g = a.geometry; let d;
+    if (a.geometry_type === 'point') d = Math.hypot(g.x - ix, g.y - iy);
+    else if (a.geometry_type === 'bbox') d = (ix >= g.x0 && ix <= g.x1 && iy >= g.y0 && iy <= g.y1) ? 0 : 1e9;
+    else continue;
+    if (d < bd) { bd = d; best = a.id; }
+  }
+  return best;
+}
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const f = e.deltaY < 0 ? 1.25 : 0.8, sx = e.offsetX * devicePixelRatio, sy = e.offsetY * devicePixelRatio;
+  const ns = Math.min(64, Math.max(0.02, scale * f)); ox = sx - (sx - ox) * ns / scale; oy = sy - (sy - oy) * ns / scale; scale = ns; draw();
+}, {passive: false});
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('mousedown', e => {
+  const [ix, iy] = toImg(e.offsetX, e.offsetY);
+  if (e.button === 1 || e.button === 2 || spaceDown) { panning = [e.clientX, e.clientY]; return; }
+  if (e.ctrlKey) { sel = nearest(ix, iy); renderAnns(); draw(); return; }
+  if (tool === 'point') addAnn('point', {x: ix, y: iy, r: 2});
+  else drag = {x0: ix, y0: iy, x1: ix, y1: iy};
+});
+window.addEventListener('mousemove', e => {
+  if (panning) { ox += (e.clientX - panning[0]) * devicePixelRatio; oy += (e.clientY - panning[1]) * devicePixelRatio; panning = [e.clientX, e.clientY]; draw(); return; }
+  const r = cv.getBoundingClientRect(), [ix, iy] = toImg(e.clientX - r.left, e.clientY - r.top);
+  if (drag) { drag.x1 = ix; drag.y1 = iy; draw(); }
+  $('hud').textContent = `x ${ix.toFixed(1)}  y ${iy.toFixed(1)}  ·  zoom ${(scale).toFixed(2)}×  ·  ${cls} / ${$('state').value} / ${tool}`;
+});
+window.addEventListener('mouseup', () => {
+  panning = null;
+  if (drag) {
+    const g = {x0: Math.min(drag.x0, drag.x1), y0: Math.min(drag.y0, drag.y1), x1: Math.max(drag.x0, drag.x1), y1: Math.max(drag.y0, drag.y1)};
+    drag = null;
+    if (g.x1 - g.x0 >= 2 && g.y1 - g.y0 >= 2) addAnn('bbox', g); else draw();
+  }
+});
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { spaceDown = true; e.preventDefault(); return; }
+  const k = e.key.toUpperCase();
+  const c = classes.find(c => (c.shortcut || '').toUpperCase() === k);
+  if (k === 'ARROWRIGHT') loadFrame(cur + 1); else if (k === 'ARROWLEFT') loadFrame(cur - 1);
+  else if (k === 'P') setTool('point'); else if (k === 'B') setTool('box');
+  else if (k === 'F') fit(); else if (k === 'Z') oneToOne();
+  else if (k === 'N') { $('state').value = $('state').value === 'negative' ? 'positive' : 'negative'; }
+  else if (k === 'DELETE' || k === 'BACKSPACE') { if (sel) delAnn(sel); }
+  else if (k === 'C') { if (sel) updateAnn(sel, {review: 'confirm'}); }
+  else if (k === 'ESCAPE') { sel = null; drag = null; renderAnns(); draw(); }
+  else if (c) setClass(c.name);
+});
+document.addEventListener('keyup', e => { if (e.code === 'Space') spaceDown = false; });
+function setTool(t) { tool = t; $('tpoint').classList.toggle('on', t === 'point'); $('tbox').classList.toggle('on', t === 'box'); }
+$('tpoint').onclick = () => setTool('point'); $('tbox').onclick = () => setTool('box');
+$('fit').onclick = fit; $('one').onclick = oneToOne;
+$('mode').onchange = () => loadFrame(cur);
+$('review').onchange = async () => { await api(`/api/frame/${frames[cur].id}/review`, {status: $('review').value}); frames[cur].review_status = $('review').value; renderFrames(); };
+new ResizeObserver(() => { const empty = !(scale > 0); resize(); if (empty) fit(); }).observe($('stage'));
+resize(); init();
+</script>
+</body>
+</html>

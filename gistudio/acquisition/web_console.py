@@ -228,6 +228,7 @@ class Console:
                 "pixel_formats": self.cam.available_pixel_formats() if hasattr(self.cam, "available_pixel_formats") else [],
                 "fps": round(self.fps, 2), "frames": self.count,
                 "stream_mode": getattr(self.cam, "stream_mode", None),
+                "reconnects": self.cam.reconnects() if hasattr(self.cam, "reconnects") else 0,
                 "frame_age_ms": int((time.time() - self.frame_t) * 1000) if self.frame_t else None,
                 "last_grab_ms": round(self.last_grab_ms, 1), "last_jpeg_ms": round(self.last_jpeg_ms, 1), "quality": q, "error": self.error,
                 "stretch": self.stretch, "project": str(self.p.root),

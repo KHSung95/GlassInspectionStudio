@@ -20,8 +20,20 @@ HDR = struct.Struct("<qdiii")          # count, timestamp, height, width, itemsi
 HDR_SIZE = 64
 
 
+def _raise_priority() -> None:
+    """Keep GigE packet handling / heartbeats on time when other work loads the CPU (Windows only)."""
+    try:
+        import ctypes
+        ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
+        k32 = ctypes.windll.kernel32
+        k32.SetPriorityClass(k32.GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS)
+    except Exception:
+        pass
+
+
 def _worker(cti: str, shm_name: str, cap: int, lock, cmd, ready):
     from .genicam_camera import GenICamCamera
+    _raise_priority()
     shm = shared_memory.SharedMemory(name=shm_name)
     cam = GenICamCamera(cti)
     try:
@@ -33,6 +45,8 @@ def _worker(cti: str, shm_name: str, cap: int, lock, cmd, ready):
         shm.close()
         return
     count = 0
+    misses = 0
+    reconnects = 0
     running = True
     while running:
         # commands (settings, info, stop) are handled between frames
@@ -62,8 +76,27 @@ def _worker(cti: str, shm_name: str, cap: int, lock, cmd, ready):
             break
         try:
             img = cam.grab(timeout_s=2.0)
+            misses = 0
         except Exception:
-            time.sleep(0.05)
+            misses += 1
+            if misses >= 3:
+                # stream is dead (e.g. GigE heartbeat lost under load): reopen the device and resume
+                misses = 0
+                try:
+                    cam.close()
+                except Exception:
+                    pass
+                try:
+                    time.sleep(1.0)
+                    cam = GenICamCamera(cti)
+                    cam.open()
+                    reconnects += 1
+                    with lock:
+                        shm.buf[HDR.size:HDR.size + 8] = struct.pack("<q", reconnects)
+                except Exception:
+                    time.sleep(2.0)
+            else:
+                time.sleep(0.05)
             continue
         n = img.nbytes
         if n + HDR_SIZE > cap:
@@ -140,6 +173,10 @@ class ProcessCamera:
 
     def stop(self):
         pass  # the worker stops/restarts acquisition itself around feature writes
+
+    def reconnects(self) -> int:
+        with self.lock:
+            return struct.unpack("<q", bytes(self.shm.buf[HDR.size:HDR.size + 8]))[0]
 
     def latest(self) -> tuple[np.ndarray | None, int, float]:
         with self.lock:

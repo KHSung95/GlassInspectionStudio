@@ -55,13 +55,15 @@ def test_sweep_recommends_presets(project, tmp_path):
     _scene(tmp_path, project, 3)
     fids = labelled_frames(project)
     assert len(fids) == 3
-    r = run_sweep(project, SweepConfig("classical.blackhat", fids, {"kernel": [5, 9, 15], "pre_sigma": [0.0]},
-                                       max_combos=10))
+    # the graduation line is darker than the spots: only the area limit (max_area) can separate it
+    r = run_sweep(project, SweepConfig("classical.blackhat", fids, {"kernel": [5, 9, 15], "max_area": [50, 400]},
+                                       max_combos=10, threshold_grid=[6.0, 11.0, 22.0]))
     objs = {x["objective"]: x for x in r["recommendations"]}
     assert "balanced" in objs and "high_recall" in objs
     assert objs["balanced"]["tune"]["recall"] >= 0.9                 # clear 3x3 spots must be found
     assert objs["balanced"]["tune"]["fp_verified"] == 0             # line on verified-normal ROI rejected
-    assert r["n_gt"] == 9 and r["combos_evaluated"] == 3
+    assert objs["balanced"]["params"]["max_area"] == 50
+    assert r["n_gt"] == 9 and r["combos_evaluated"] == 6
     paths = save_presets(project, r)
     d = json.loads(open(paths[0], encoding="utf-8").read())
     assert d["algorithm"] == "classical.blackhat" and "threshold" in d["params"]

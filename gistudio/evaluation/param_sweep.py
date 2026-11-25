@@ -8,8 +8,9 @@ How it works
 2. For speed, each frame is processed on crops around its labels (+margin) unless the frame was exhaustively
    reviewed (then the full frame). The frame-level noise sigma is passed in, so SNR scores and thresholds are
    identical to full-frame runs.
-3. Each non-threshold parameter combination is run ONCE with a low threshold; the detection threshold is then
-   swept analytically over the candidate scores.
+3. Every parameter combination is run at every threshold of a grid. The threshold is NOT swept analytically
+   from one low-threshold run, because connected components (candidate positions) change with the threshold:
+   at low thresholds a small spot merges with nearby ink/edges and its candidate moves away (observed on real data).
 4. Several objectives pick operating points (balanced F1, high recall, low FP, zero verified FP). Optionally a
    bottle-level hold-out set reports the same metrics on unseen bottles to expose over-fitting.
 
@@ -41,9 +42,9 @@ AREA_CLASSES = ["Intensity / Transparency Defect"]
 
 # Explicit, physically sensible grids (threshold handled analytically, so it is not in the grid).
 SPACES: dict[str, dict[str, list]] = {
-    "classical.blackhat": {"kernel": [5, 7, 9, 11, 15, 21], "pre_sigma": [0.0, 0.7, 1.2], "min_area": [1, 2]},
-    "classical.dog": {"sigma_small": [0.7, 1.0, 1.5], "sigma_large": [3.0, 4.0, 6.0, 8.0], "pre_sigma": [0.0]},
-    "classical.log_blob": {"sigma_min": [0.6, 0.8, 1.2], "sigma_max": [2.0, 3.0, 5.0], "n_scales": [3, 5]},
+    "classical.blackhat": {"kernel": [5, 9, 15, 21], "pre_sigma": [0.0, 1.2], "min_area": [1, 2], "max_area": [60, 400]},
+    "classical.dog": {"sigma_small": [0.7, 1.0, 1.5], "sigma_large": [3.0, 4.0, 6.0, 8.0], "max_area": [60, 400]},
+    "classical.log_blob": {"sigma_min": [0.6, 0.8, 1.2], "sigma_max": [2.0, 3.0, 5.0], "n_scales": [3], "max_area": [60, 400]},
     "classical.local_background": {"bg_kernel": [15, 31, 61], "downsample": [1, 2], "pre_sigma": [0.0, 0.8]},
     "classical.local_contrast": {"window": [9, 15, 25, 41], "pre_sigma": [0.0, 0.8]},
     "classical.adaptive_threshold": {"window": [15, 25, 51], "offset_sigma": [3.0, 4.0, 5.0, 6.0]},
@@ -55,9 +56,13 @@ SPACES: dict[str, dict[str, list]] = {
     "classical.bubble_contour": {"sigma_min": [1.0, 2.0], "sigma_max": [6.0, 8.0, 12.0],
                                  "min_circularity": [0.3, 0.5, 0.7]},
 }
-LOW_THRESHOLD = {"classical.local_contrast": 4.0, "classical.adaptive_threshold": 3.0,
-                 "classical.gradient_texture": 1.5, "classical.lowfreq_deviation": 1.5,
-                 "classical.local_intensity_deviation": 1.5, "classical.bubble_contour": 1.0}
+DEFAULT_THRESHOLD_GRID = [4.0, 6.0, 8.0, 11.0, 16.0, 22.0, 32.0, 45.0, 64.0]
+THRESHOLD_GRID = {"classical.local_contrast": [4.0, 6.0, 8.0, 12.0, 16.0, 24.0],
+                  "classical.adaptive_threshold": [3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0],
+                  "classical.gradient_texture": [1.5, 2.0, 3.0, 4.0, 6.0],
+                  "classical.lowfreq_deviation": [1.5, 2.0, 3.0, 4.0, 6.0, 8.0],
+                  "classical.local_intensity_deviation": [1.5, 2.0, 3.0, 4.0, 6.0, 8.0],
+                  "classical.bubble_contour": [1.0, 2.0, 3.0, 4.0, 6.0, 8.0]}
 
 
 def default_gt_classes(algorithm_id: str) -> list[str]:
@@ -86,6 +91,7 @@ class SweepConfig:
     holdout_fraction: float = 0.0     # bottle-level hold-out for validation of the recommendations
     max_candidates: int = 3000
     min_useful_recall: float = 0.3    # low-FP / zero-FP presets below this recall are not recommended
+    threshold_grid: list | None = None  # None -> per-algorithm default grid
 
     def to_dict(self):
         return asdict(self)
@@ -267,28 +273,39 @@ def run_sweep(project: Project, cfg: SweepConfig, progress=None, stop=None) -> d
         warnings.append(f"Only {n_gt} labelled defects: recommendations may over-fit.")
     combos = _combos(space, cfg.max_combos, cfg.seed)
     base = {p.name: p.default for p in alg_cls.params_spec}
-    low = LOW_THRESHOLD.get(cfg.algorithm, 3.0)
+    # The threshold is a real detection parameter: connected components (and therefore candidate positions)
+    # change with it — at a low threshold a tiny spot merges with neighbouring ink/edges. So every threshold in
+    # the grid is detected separately and evaluated only at its own value (no analytic re-thresholding).
+    grid = list(cfg.threshold_grid or THRESHOLD_GRID.get(cfg.algorithm, DEFAULT_THRESHOLD_GRID))
     trials, per_combo = [], []
     t_start = time.time()
+    total = len(combos) * len(grid)
+    step = 0
     for i, combo in enumerate(combos):
-        if stop and stop():
-            warnings.append("sweep stopped early by the user")
-            break
-        params = {**base, **combo, "threshold": low}
-        if "max_candidates" in params:
-            params["max_candidates"] = cfg.max_candidates
-        frames, ms = _detect(cfg.algorithm, params, truths, cfg.max_candidates)
         best = None
-        for thr in _thresholds(frames):
+        ms_list = []
+        for thr in grid:
+            if stop and stop():
+                break
+            params = {**base, **combo, "threshold": thr}
+            if "max_candidates" in params:
+                params["max_candidates"] = cfg.max_candidates
+            frames, ms = _detect(cfg.algorithm, params, truths, cfg.max_candidates)
+            ms_list.append(ms)
             m = _metrics(frames, thr, cfg.tolerance_px)
             t = {"combo": combo, "threshold": thr, "m": m, "ms_frame_crops": ms}
             trials.append(t)
             if best is None or m["f1_verified"] > best["m"]["f1_verified"]:
                 best = t
+            step += 1
+            if progress:
+                progress(step, total, f"{combo} thr={thr} recall={m['recall']} FPver={m['fp_verified']}")
+        if stop and stop():
+            warnings.append("sweep stopped early by the user")
+            break
+        ms = float(np.mean(ms_list)) if ms_list else 0.0
         per_combo.append({"combo": combo, "best_f1": best["m"]["f1_verified"] if best else 0.0,
                           "best_threshold": best["threshold"] if best else None, "ms": ms})
-        if progress:
-            progress(i + 1, len(combos), f"{combo} best F1={per_combo[-1]['best_f1']:.3f}")
     picks = _pick(trials, cfg)
     for name in ("low_fp", "zero_verified_fp"):
         if name not in picks:
@@ -299,12 +316,14 @@ def run_sweep(project: Project, cfg: SweepConfig, progress=None, stop=None) -> d
         params = {**base, **t["combo"], "threshold": round(t["threshold"], 4)}
         rec = {"objective": name, "description": DESCRIPTIONS[name], "params": params, "tune": _short(t["m"])}
         if hold_truths:
-            frames, _ = _detect(cfg.algorithm, {**params, "threshold": low}, hold_truths, cfg.max_candidates)
+            frames, _ = _detect(cfg.algorithm, {**params, "max_candidates": cfg.max_candidates}, hold_truths,
+                                cfg.max_candidates)
             rec["holdout"] = _short(_metrics(frames, t["threshold"], cfg.tolerance_px))
         recs.append(rec)
-    # baseline (defaults) for comparison
-    frames, _ = _detect(cfg.algorithm, {**base, "threshold": low}, truths, cfg.max_candidates)
-    baseline = {"params": base, "tune": _short(_metrics(frames, base.get("threshold", low), cfg.tolerance_px))}
+    # baseline (defaults) for comparison — detected at its own threshold
+    bparams = {**base, **({"max_candidates": cfg.max_candidates} if "max_candidates" in base else {})}
+    frames, _ = _detect(cfg.algorithm, bparams, truths, cfg.max_candidates)
+    baseline = {"params": base, "tune": _short(_metrics(frames, base.get("threshold", 0.0), cfg.tolerance_px))}
     return {"algorithm": cfg.algorithm, "config": cfg.to_dict(), "gt_classes": gt_classes, "n_gt": n_gt,
             "tune_frames": len(truths), "holdout_frames": len(hold_truths), "verified_negative_frames": n_neg_frames,
             "combos_evaluated": len(per_combo), "seconds": round(time.time() - t_start, 1),
