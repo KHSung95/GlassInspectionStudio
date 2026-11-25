@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glass Inspection Studio</title>
+<style>
+:root{--bg:#14161a;--panel:#1d2026;--panel2:#23272f;--line:#2f343d;--text:#e4e7eb;--muted:#9aa1ab;--accent:#4da3ff;--ok:#3ecf8e;--warn:#ffb454;--bad:#ff6b6b}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:13px/1.45 system-ui,"Segoe UI","Malgun Gothic",sans-serif;display:grid;grid-template-rows:auto 1fr}
+header{display:flex;align-items:center;gap:14px;padding:0 12px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+header b{font-size:14px;padding:10px 0}
+nav{display:flex;gap:2px}
+nav button{background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);padding:11px 14px;font:inherit;cursor:pointer}
+nav button.on{color:var(--text);border-bottom-color:var(--accent)}
+#proj{color:var(--muted);margin-left:auto;font-size:12px}
+#jobind{font-size:12px;color:var(--warn)}
+main{min-height:0;position:relative}
+.tab{position:absolute;inset:0;display:none;overflow:auto}
+.tab.on{display:block}
+.tab.frame{overflow:hidden}
+iframe{border:0;width:100%;height:100%;display:block;background:var(--bg)}
+.page{max-width:1200px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:14px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+section h3{margin:0 0 10px;font-size:13px;color:var(--muted);font-weight:600}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,select{background:#111318;color:var(--text);border:1px solid var(--line);border-radius:5px;padding:6px 8px;font:inherit}
+input.wide{flex:1;min-width:260px}
+button.b{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:5px;padding:6px 12px;font:inherit;cursor:pointer}
+button.p{background:var(--accent);border-color:var(--accent);color:#0b1220;font-weight:600}
+button:disabled{opacity:.5;cursor:default}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{border-bottom:1px solid var(--line);padding:5px 8px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.kpi div{background:var(--panel2);border-radius:6px;padding:8px 10px}
+.kpi b{display:block;font-size:18px}
+.kpi span{color:var(--muted);font-size:11.5px}
+.muted{color:var(--muted)} .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+.job{border:1px solid var(--line);border-radius:6px;padding:6px 8px;margin-bottom:6px;font-size:12px}
+.job pre{margin:4px 0 0;white-space:pre-wrap;color:var(--muted);font-size:11px;max-height:90px;overflow:auto}
+.msg{min-height:18px;font-size:12px}
+label.chk{display:inline-flex;gap:5px;align-items:center;margin-right:10px}
+code{background:#111318;padding:1px 4px;border-radius:3px}
+</style>
+</head>
+<body>
+<header>
+  <b>Glass Inspection Studio</b>
+  <nav id="nav">
+    <button data-t="project" class="on">프로젝트</button>
+    <button data-t="camera">촬영</button>
+    <button data-t="label">라벨링</button>
+    <button data-t="analysis">분석</button>
+    <button data-t="report">보고서</button>
+  </nav>
+  <span id="jobind"></span>
+  <span id="proj">프로젝트 없음</span>
+</header>
+<main>
+  <!-- ======================= project ======================= -->
+  <div class="tab on" id="t-project"><div class="page">
+    <section>
+      <h3>프로젝트 열기 / 만들기</h3>
+      <div class="row">
+        <input id="ppath" class="wide" placeholder="프로젝트 폴더 경로 (예: C:\dev\gis_real2d)">
+        <button class="b p" id="bopen">열기</button>
+        <button class="b" id="bcreate">새로 만들기</button>
+      </div>
+      <div class="row" id="recent" style="margin-top:8px"></div>
+      <div class="msg" id="pmsg"></div>
+    </section>
+    <div id="pbody" style="display:none;flex-direction:column;gap:14px">
+      <section>
+        <h3>현황</h3>
+        <div class="kpi" id="kpi"></div>
+        <div class="muted" style="margin-top:8px" id="backupinfo"></div>
+        <div class="row" style="margin-top:8px">
+          <button class="b" id="bbackup">지금 DB 백업</button>
+          <button class="b" id="bexport">라벨 내보내기 (JSON)</button>
+          <span class="msg" id="bmsg"></span>
+        </div>
+      </section>
+      <div class="grid2">
+        <section>
+          <h3>데이터 가져오기 (원본은 수정하지 않고 경로로 참조, zip은 프로젝트 안에 풀어서 사용)</h3>
+          <div class="row"><input id="ipath" class="wide" placeholder="이미지 폴더 또는 .zip 경로"></div>
+          <div class="row" style="margin-top:8px">
+            <select id="ilayout"><option value="flat">폴더 = 병 1개 (flat)</option><option value="bottle">병별 폴더</option><option value="bottle/session">병/세션 폴더</option></select>
+            <input id="ibottle" placeholder="병 코드 (flat일 때)" style="width:150px">
+            <input id="idataset" placeholder="데이터셋 이름" style="width:140px">
+            <input id="istep" placeholder="각도 간격(선택)" style="width:110px">
+            <button class="b p" id="bimport">가져오기</button>
+          </div>
+          <div class="msg" id="imsg"></div>
+        </section>
+        <section>
+          <h3>카메라 설정 (프로젝트에 저장, 연결할 때 적용)</h3>
+          <div class="row">
+            <label>패킷 크기 <input id="cpk" type="number" style="width:90px"></label>
+            <label>프레임률 <input id="cfps" type="number" step="0.5" style="width:70px"></label>
+            <button class="b" id="bcam">저장</button>
+          </div>
+          <div class="muted" style="margin-top:6px">패킷 8192는 네트워크 어댑터의 Jumbo Frame(9014)이 켜져 있어야 합니다. 1 GbE에서는 5 fps 이하를 권장합니다.</div>
+          <div class="msg" id="cmsg"></div>
+        </section>
+      </div>
+      <section>
+        <h3>병 / 세션</h3>
+        <table id="sessions"></table>
+      </section>
+      <section>
+        <h3>클래스별 라벨</h3>
+        <table id="classes"></table>
+      </section>
+    </div>
+  </div></div>
+
+  <!-- ======================= capture / label (embedded) ======================= -->
+  <div class="tab frame" id="t-camera"><iframe id="fcamera" title="촬영"></iframe></div>
+  <div class="tab frame" id="t-label"><iframe id="flabel" title="라벨링"></iframe></div>
+
+  <!-- ======================= analysis ======================= -->
+  <div class="tab" id="t-analysis"><div class="page">
+    <section>
+      <h3>결함 종류별 평가 (사용자 라벨 기준 · 결함마다 다른 검출기와 기준)</h3>
+      <div class="row">
+        <label class="chk"><input type="checkbox" value="black_spot" checked>흑점</label>
+        <label class="chk"><input type="checkbox" value="bubble" checked>기포</label>
+        <label class="chk"><input type="checkbox" value="intensity_tint" checked>명암·착색</label>
+        <label class="chk"><input type="checkbox" value="linear_void" checked>선형·부메랑 파임</label>
+        <label>조합 수 <input id="combos" type="number" value="8" style="width:60px"></label>
+        <button class="b p" id="bsweep">평가 실행</button>
+      </div>
+      <div class="muted" style="margin-top:6px">낮은 우선순위의 별도 프로세스로 실행되어 촬영·라벨링을 계속할 수 있습니다. 12MP 기준 수 분~수십 분이 걸릴 수 있습니다.</div>
+      <div class="msg" id="smsg"></div>
+    </section>
+    <section>
+      <h3>최근 평가 결과 <span class="muted" id="ptime"></span></h3>
+      <div id="perclass" class="muted">아직 결과가 없습니다.</div>
+    </section>
+    <div class="grid2">
+      <section>
+        <h3>검출기 실행 (후보 생성 → 라벨링 화면에서 확인)</h3>
+        <div class="row">
+          <select id="dalg"></select>
+          <select id="dframes"><option value="all">모든 프레임</option></select>
+          <button class="b" id="bdetect">실행</button>
+        </div>
+        <div class="msg" id="dmsg"></div>
+        <table id="runs" style="margin-top:8px"></table>
+      </section>
+      <section>
+        <h3>작업</h3>
+        <div id="jobs" class="muted">작업 없음</div>
+      </section>
+    </div>
+  </div></div>
+
+  <!-- ======================= report ======================= -->
+  <div class="tab" id="t-report"><div class="page">
+    <section>
+      <h3>보고서 생성 (데이터 현황 · 라벨 예시 · 결함별 평가 결과 · 한계)</h3>
+      <div class="row">
+        <input id="rtitle" class="wide" placeholder="보고서 제목 (선택)">
+        <button class="b p" id="breport">생성</button>
+      </div>
+      <div class="msg" id="rmsg"></div>
+    </section>
+    <section>
+      <h3>보고서 목록</h3>
+      <table id="reports"></table>
+    </section>
+  </div></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const api = async (p, body) => {
+  const r = await fetch(p, body ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)} : {});
+  return r.json();
+};
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+let info = null, curTab = 'project', loaded = {};
+
+// ------------------------------------------------------------------ tabs
+document.querySelectorAll('#nav button').forEach(b => b.onclick = () => showTab(b.dataset.t));
+function showTab(t) {
+  curTab = t;
+  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.t === t));
+  document.querySelectorAll('.tab').forEach(d => d.classList.toggle('on', d.id === 't-' + t));
+  if ((t === 'camera' || t === 'label') && !loaded[t]) { $('f' + t).src = '/' + t; loaded[t] = true; }
+  if (t === 'analysis') refreshAnalysis();
+  if (t === 'report') refreshReports();
+  try { localStorage.setItem('gis.tab', t); } catch (e) {}
+}
+
+// ------------------------------------------------------------------ project
+async function refreshProject() {
+  info = await api('/studio/project');
+  $('recent').innerHTML = (info.recent || []).map(r => `<button class="b" data-p="${esc(r)}">${esc(r)}</button>`).join('');
+  $('recent').querySelectorAll('button').forEach(b => b.onclick = () => openProject(b.dataset.p, false));
+  if (!info.open) { $('proj').textContent = '프로젝트 없음'; $('pbody').style.display = 'none'; return; }
+  $('proj').textContent = info.root;
+  $('ppath').value = info.root;
+  $('pbody').style.display = 'flex';
+  const s = info.stats;
+  const k = [['병', s.bottles], ['세션', s.sessions], ['프레임', s.frames], ['라벨', s.annotations], ['결함 라벨', s.confirmed_positive],
+             ['정상 확인 병', s.ok_bottles], ['검출 실행', s.runs]];
+  $('kpi').innerHTML = k.map(([a, b]) => `<div><b>${b}</b><span>${a}</span></div>`).join('');
+  $('backupinfo').textContent = info.last_backup ? '열 때 자동 백업: ' + info.last_backup : '';
+  if (!s.ok_bottles) $('backupinfo').innerHTML += '<br><span class="warn">정상 확인 병이 없어 오배출률은 측정할 수 없습니다.</span>';
+  $('sessions').innerHTML = '<tr><th>병</th><th>세션</th><th>품종</th><th>프레임</th><th>검토 완료</th><th>라벨</th><th>결함</th><th>카메라</th><th>원본 위치</th></tr>' +
+    info.sessions.map(r => `<tr><td>${esc(r.bottle)}</td><td>${esc(r.session)}</td><td>${esc(r.product_type)}</td><td>${r.frames}</td><td>${r.reviewed}</td><td>${r.labels}</td><td>${r.defects}</td><td>${esc(r.camera)}</td><td class="muted">${esc(r.source)}</td></tr>`).join('');
+  $('classes').innerHTML = '<tr><th>클래스</th><th>상태</th><th>개수</th></tr>' +
+    info.labels_by_class.map(r => `<tr><td>${esc(r.class_name)}</td><td>${esc(r.label_state)}</td><td>${r.n}</td></tr>`).join('');
+  const c = info.settings.camera;
+  $('cpk').value = c.packet_size ?? ''; $('cfps').value = c.fps ?? '';
+}
+async function openProject(path, create) {
+  $('pmsg').textContent = create ? '만드는 중…' : '여는 중…';
+  const r = await api('/studio/open', {path, create});
+  if (!r.ok) { $('pmsg').innerHTML = `<span class="bad">${esc(r.error)}</span>`; return; }
+  $('pmsg').innerHTML = `<span class="ok">열림: ${esc(r.project.root)}</span>`;
+  loaded = {}; $('flabel').src = 'about:blank'; $('fcamera').src = 'about:blank';
+  await refreshProject();
+}
+$('bopen').onclick = () => openProject($('ppath').value.trim(), false);
+$('bcreate').onclick = () => { if (confirm('이 경로에 새 프로젝트를 만듭니다. (기존 프로젝트는 덮어쓰지 않음)')) openProject($('ppath').value.trim(), true); };
+$('bbackup').onclick = async () => { const r = await api('/studio/backup', {}); $('bmsg').innerHTML = r.ok ? `<span class="ok">백업: ${esc(r.backup)}</span>` : `<span class="bad">${esc(r.error)}</span>`; refreshProject(); };
+$('bexport').onclick = async () => { const r = await api('/studio/export_labels', {}); $('bmsg').innerHTML = r.ok ? `<span class="ok">${r.annotations}개 → ${esc(r.file)}</span>` : `<span class="bad">${esc(r.error)}</span>`; };
+$('bcam').onclick = async () => {
+  const r = await api('/studio/settings', {camera: {...info.settings.camera, packet_size: +$('cpk').value || null, fps: +$('cfps').value || null}});
+  $('cmsg').innerHTML = r.ok ? '<span class="ok">저장됨 (다음 카메라 연결부터 적용)</span>' : `<span class="bad">${esc(r.error)}</span>`;
+  refreshProject();
+};
+$('bimport').onclick = async () => {
+  const r = await api('/studio/import', {path: $('ipath').value, layout: $('ilayout').value, bottle: $('ibottle').value,
+                                          dataset: $('idataset').value, angle_step: $('istep').value});
+  $('imsg').innerHTML = r.ok ? `<span class="ok">가져오기 시작 (작업 #${r.job.id}) — 완료되면 현황이 갱신됩니다.</span>` : `<span class="bad">${esc(r.error)}</span>`;
+  pollJobs();
+};
+
+// ------------------------------------------------------------------ analysis
+const GNAME = {black_spot: '흑점', bubble: '기포', intensity_tint: '명암·착색', linear_void: '선형·부메랑 파임'};
+const OBJ = {balanced: '균형', high_recall: '높은 검출률', low_fp: '낮은 오검출', zero_verified_fp: '정상영역 오검출 0', review_budget: '검토 부담 제한'};
+async function refreshAnalysis() {
+  if (!info || !info.open) return;
+  const algs = await api('/studio/algorithms');
+  if (!$('dalg').options.length) $('dalg').innerHTML = algs.map(a => `<option value="${a.id}">${esc(a.name)} (${esc(a.default_class)})</option>`).join('');
+  const r = await api('/studio/analysis');
+  $('ptime').textContent = r.per_class_time ? '· ' + r.per_class_time : '';
+  if (r.per_class) {
+    let h = '';
+    for (const [g, algsR] of Object.entries(r.per_class)) {
+      h += `<h4 style="margin:12px 0 6px">${GNAME[g] || g}</h4><table><tr><th>검출기</th><th>설정</th><th>threshold</th><th>검출률</th><th>정상영역 오검출</th><th>1MP당 오검출 후보</th></tr>`;
+      for (const [alg, x] of Object.entries(algsR)) {
+        if (x.error) { h += `<tr><td>${alg}</td><td colspan="5" class="bad">${esc(x.error)}</td></tr>`; continue; }
+        const b = x.baseline;
+        h += `<tr><td>${alg.replace('classical.', '')} <span class="muted">(GT ${x.n_gt})</span></td><td class="muted">기본값</td><td>${b.threshold}</td><td>${b.recall}</td><td>${b.fp_verified}</td><td>${Math.round(b.false_alarms_per_mp ?? 0)}</td></tr>`;
+        for (const o of x.recommendations) {
+          const m = o.tune;
+          h += `<tr><td></td><td>${OBJ[o.objective] || o.objective}</td><td>${m.threshold}</td><td><b>${m.recall}</b></td><td>${m.fp_verified}</td><td>${Math.round(m.false_alarms_per_mp ?? 0)}</td></tr>`;
+        }
+        for (const w of x.warnings || []) h += `<tr><td></td><td colspan="5" class="warn">${esc(w)}</td></tr>`;
+      }
+      h += '</table>';
+    }
+    $('perclass').innerHTML = h + '<div class="muted" style="margin-top:8px">추천 파라미터는 프로젝트 presets/ 폴더에 저장됩니다. 라벨 수가 적으면 수치가 낙관적일 수 있습니다.</div>';
+  }
+  $('runs').innerHTML = '<tr><th>#</th><th>검출기</th><th>후보</th><th>상태</th><th>시각</th></tr>' +
+    r.runs.map(x => `<tr><td>${x.id}</td><td>${esc(x.algorithm)}</td><td>${x.candidates}</td><td>${x.status}</td><td class="muted">${esc(x.created_at)}</td></tr>`).join('');
+}
+$('bsweep').onclick = async () => {
+  const groups = [...document.querySelectorAll('#t-analysis input[type=checkbox]:checked')].map(c => c.value);
+  const r = await api('/studio/sweep', {groups, combos: +$('combos').value});
+  $('smsg').innerHTML = r.ok ? `<span class="ok">시작됨 (작업 #${r.job.id})</span>` : `<span class="bad">${esc(r.error)}</span>`;
+  pollJobs();
+};
+$('bdetect').onclick = async () => {
+  const r = await api('/studio/detect', {algorithm: $('dalg').value, frames: $('dframes').value});
+  $('dmsg').innerHTML = r.ok ? `<span class="ok">시작됨 (작업 #${r.job.id})</span>` : `<span class="bad">${esc(r.error)}</span>`;
+  pollJobs();
+};
+
+// ------------------------------------------------------------------ jobs
+let lastRunning = 0;
+async function pollJobs() {
+  let jobs = [];
+  try { jobs = await api('/studio/jobs'); } catch (e) { return; }
+  const running = jobs.filter(j => j.status === 'running').length;
+  $('jobind').textContent = running ? `작업 ${running}개 실행 중…` : '';
+  $('jobs').innerHTML = jobs.length ? jobs.map(j => `<div class="job"><b>#${j.id} ${esc(j.title)}</b> · <span class="${j.status === 'failed' ? 'bad' : j.status === 'done' ? 'ok' : 'warn'}">${j.status}</span> · ${j.started}${j.ended ? '–' + j.ended : ''}
+     ${j.status === 'running' ? `<button class="b" style="padding:1px 6px;margin-left:6px" onclick="api('/studio/job_cancel',{id:${j.id}}).then(pollJobs)">중지</button>` : ''}
+     <pre>${esc((j.tail || []).join('\n'))}</pre></div>`).join('') : '작업 없음';
+  if (lastRunning && !running) { refreshProject(); if (curTab === 'analysis') refreshAnalysis(); if (curTab === 'report') refreshReports(); }
+  lastRunning = running;
+}
+setInterval(pollJobs, 2500);
+
+// ------------------------------------------------------------------ reports
+async function refreshReports() {
+  if (!info || !info.open) return;
+  const r = await api('/studio/reports');
+  $('reports').innerHTML = '<tr><th>보고서</th><th>생성 시각</th></tr>' + (r.length ? r.map(x => `<tr><td><a href="/files/${encodeURI(x.rel)}" target="_blank" style="color:var(--accent)">${esc(x.name)}</a></td><td class="muted">${esc(x.time)}</td></tr>`).join('') : '<tr><td colspan="2" class="muted">없음</td></tr>');
+}
+$('breport').onclick = async () => {
+  const r = await api('/studio/report', {title: $('rtitle').value});
+  $('rmsg').innerHTML = r.ok ? `<span class="ok">생성 중 (작업 #${r.job.id}) — 완료되면 목록에 나타납니다.</span>` : `<span class="bad">${esc(r.error)}</span>`;
+  pollJobs();
+};
+
+refreshProject().then(() => { let t = 'project'; try { t = localStorage.getItem('gis.tab') || 'project'; } catch (e) {} showTab(t); });
+pollJobs();
+</script>
+</body>
+</html>

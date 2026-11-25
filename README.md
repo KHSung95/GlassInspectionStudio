@@ -19,8 +19,13 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1 -DownloadModels -RunTests
 ```
 
 ```powershell
-.\launch.ps1 C:\dev\gis_demo
+.\GlassInspectionStudio.cmd
 ```
+
+**`GlassInspectionStudio.cmd`가 기본 실행 방법입니다.** 실행하면 웹 스튜디오(http://127.0.0.1:8800)가 브라우저에 열립니다.
+- 탭 구성: 프로젝트 / 촬영 / 라벨링 / 분석 / 보고서
+- 창을 닫으면 스튜디오가 종료되고 카메라가 해제됩니다.
+- 고급 기능(학습 설정, 상세 평가)은 데스크톱 GUI를 씁니다: `DesktopGUI.cmd` 또는 `.\launch.ps1 <프로젝트>`
 
 * `setup.ps1`은 프로젝트 전용 `.venv`만 만들고, 시스템 전역 Python은 건드리지 않습니다.
 * `nvidia-smi`로 NVIDIA 드라이버를 감지해 CUDA 빌드(cu118/cu126/cu128)를 설치합니다. 드라이버가 없으면 CPU 빌드를 설치합니다.

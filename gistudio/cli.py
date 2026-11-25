@@ -121,7 +121,14 @@ def main(argv=None) -> int:
     p.add_argument("project"); p.add_argument("--port", type=int, default=8770)
     p.add_argument("--author", default="operator")
 
+    p = sub.add_parser("studio", help="Unified web studio (project / capture / labelling / analysis / report)")
+    p.add_argument("--port", type=int, default=8800); p.add_argument("--project", default=None)
+    p.add_argument("--open-browser", action="store_true")
+
     a = ap.parse_args(argv)
+    if a.cmd == "studio":
+        from .app.web_studio import serve as serve_studio
+        serve_studio(a.port, a.project, a.open_browser); return 0
     if a.cmd == "label":
         from .app.web_label import serve as serve_label
         serve_label(a.project, a.port, a.author); return 0
